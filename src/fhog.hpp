@@ -78,6 +78,7 @@ typedef struct{
 
 
 #include "float.h"
+#include <opencv2/core/core_c.h>
 
 #define PI    CV_PI
 
@@ -134,6 +135,23 @@ typedef struct{
 */
 int getFeatureMaps(const IplImage * image, const int k, CvLSVMFeatureMapCaskade **map);
 
+// Wrapper for OpenCV 4.x (Mat→IplImage implicit conversion removed)
+inline int getFeatureMaps(const cv::Mat &img, const int k, CvLSVMFeatureMapCaskade **map)
+{
+    IplImage ipl;
+    ipl.nSize = sizeof(IplImage);
+    ipl.nChannels = img.channels();
+    ipl.depth = IPL_DEPTH_8U;
+    ipl.dataOrder = IPL_DATA_ORDER_PIXEL;
+    ipl.origin = IPL_ORIGIN_TL;
+    ipl.align = IPL_ALIGN_QWORD;
+    ipl.width = img.cols;
+    ipl.height = img.rows;
+    ipl.imageSize = (int)(img.total() * img.elemSize());
+    ipl.widthStep = (int)img.step[0];
+    ipl.imageData = ipl.imageDataOrigin = (char *)img.data;
+    return getFeatureMaps(&ipl, k, map);
+}
 
 /*
 // Feature map Normalization and Truncation 

@@ -1,0 +1,5 @@
+names:
+  0: drone
+  1: target
+path: .
+train: train.txt

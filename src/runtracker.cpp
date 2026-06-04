@@ -3,12 +3,10 @@
 #include <sstream>
 #include <algorithm>
 
-#include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/highgui.hpp>
 
 #include "kcftracker.hpp"
-
-#include <dirent.h>
 
 using namespace std;
 using namespace cv;
@@ -110,7 +108,7 @@ int main(int argc, char* argv[]){
 		frameName = frameName;
 
 		// Read each frame from the list
-		frame = imread(frameName, CV_LOAD_IMAGE_COLOR);
+		frame = imread(frameName, cv::IMREAD_COLOR);
 
 		// First frame, give the groundtruth to the tracker
 		if (nFrames == 0) {

@@ -403,9 +403,8 @@ cv::Mat KCFTracker::getFeatures(const cv::Mat & image, bool inithann, float scal
 
     // HOG features
     if (_hogfeatures) {
-        IplImage z_ipl = z;
         CvLSVMFeatureMapCaskade *map;
-        getFeatureMaps(&z_ipl, cell_size, &map);
+        getFeatureMaps(z, cell_size, &map);
         normalizeAndTruncate(map,0.2f);
         PCAFeatureMaps(map);
         size_patch[0] = map->sizeY;
@@ -419,7 +418,7 @@ cv::Mat KCFTracker::getFeatures(const cv::Mat & image, bool inithann, float scal
         // Lab features
         if (_labfeatures) {
             cv::Mat imgLab;
-            cvtColor(z, imgLab, CV_BGR2Lab);
+            cvtColor(z, imgLab, cv::COLOR_BGR2Lab);
             unsigned char *input = (unsigned char*)(imgLab.data);
 
             // Sparse output vector
