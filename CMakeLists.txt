@@ -4,6 +4,7 @@ project(test)
 # Prefer MSVC-built OpenCV when using MSVC compiler
 if(MSVC)
     set(OpenCV_DIR "D:/user/OpenCv/opencv/build_for_VS" CACHE PATH "OpenCV build directory for MSVC")
+    set(OPENCV_COMPILE_FEATURES "" CACHE STRING "Disable OpenCV imported target compile features for newer MSVC detection compatibility" FORCE)
 endif()
 find_package(OpenCV REQUIRED)
 
@@ -15,9 +16,23 @@ else()
 endif()
 
 include_directories(src)
-FILE(GLOB_RECURSE sourcefiles "src/*.cpp")
-add_executable( KCF ${sourcefiles} )
-target_link_libraries( KCF ${OpenCV_LIBS})
+
+set(KCF_CORE_SOURCES
+    src/fhog.cpp
+    src/kcftracker.cpp
+)
+
+add_executable(KCF
+    src/runtracker.cpp
+    ${KCF_CORE_SOURCES}
+)
+target_link_libraries(KCF ${OpenCV_LIBS})
+
+add_executable(RunKCF
+    src/runkcf.cpp
+    ${KCF_CORE_SOURCES}
+)
+target_link_libraries(RunKCF ${OpenCV_LIBS})
 
 # Copy OpenCV DLL to output directory so the executable runs from VS
 if(WIN32 AND MSVC)
@@ -25,6 +40,11 @@ if(WIN32 AND MSVC)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
             "$<TARGET_FILE_DIR:KCF>"
+    )
+    add_custom_command(TARGET RunKCF POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
+            "$<TARGET_FILE_DIR:RunKCF>"
     )
 endif()
 
