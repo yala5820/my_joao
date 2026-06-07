@@ -481,6 +481,41 @@ int PCAFeatureMaps(CvLSVMFeatureMapCaskade *map)
     return LATENT_SVM_OK;
 }
 
+int selectFeatureMapChannels(CvLSVMFeatureMapCaskade *map, const int selectedFeatures)
+{
+    if (map == NULL || map->map == NULL) {
+        return LATENT_SVM_MEM_NULL;
+    }
+    if (selectedFeatures <= 0 || selectedFeatures > map->numFeatures) {
+        return FILTER_OUT_OF_BOUNDARIES;
+    }
+    if (selectedFeatures == map->numFeatures) {
+        return LATENT_SVM_OK;
+    }
+
+    const int sizeX = map->sizeX;
+    const int sizeY = map->sizeY;
+    const int oldFeatures = map->numFeatures;
+    float* newData = (float*)malloc(sizeof(float) * sizeX * sizeY * selectedFeatures);
+    if (newData == NULL) {
+        return LATENT_SVM_MEM_NULL;
+    }
+
+    for (int cell = 0; cell < sizeX * sizeY; ++cell) {
+        const int oldOffset = cell * oldFeatures;
+        const int newOffset = cell * selectedFeatures;
+        for (int feature = 0; feature < selectedFeatures; ++feature) {
+            newData[newOffset + feature] = map->map[oldOffset + feature];
+        }
+    }
+
+    free(map->map);
+    map->map = newData;
+    map->numFeatures = selectedFeatures;
+
+    return LATENT_SVM_OK;
+}
+
 
 //modified from "lsvmc_routine.cpp"
 

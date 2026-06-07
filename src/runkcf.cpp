@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <exception>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -13,21 +14,13 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
+#include "app_config.hpp"
 #include "kcftracker.hpp"
 
 namespace {
 
-const std::string VIDEO_PATH =
-    "D:\\code\\cpp\\vs\\myKCF\\joaofaro\\joao\\source\\d4.mp4";
-const std::string ANNOTATION_PATH = "C:\\Users\\yala5\\Desktop\\auav_data\\videos\\d4.txt";
-const bool SAVE_VIDEO_OUTPUT = false;
-const std::string OUTPUT_VIDEO_PATH =
-    "D:\\code\\cpp\\vs\\myKCF\\joaofaro\\joao\\run\\runkcf_output.mp4";
-
-const bool HOG = true;
-const bool FIXEDWINDOW = false;
-const bool MULTISCALE = true;
-const bool LAB = false;
+const std::string DEFAULT_CONFIG_PATH =
+    "D:\\code\\cpp\\vs\\myKCF\\joaofaro\\joao\\configs\\baseline_hog31.yaml";
 
 struct FrameAnnotation {
     int frameNumber;
@@ -159,17 +152,41 @@ void printFrameMetrics(int frameIndex, double kcfTimeMs, double cle, double iou)
               << ", IoU=" << iou << std::endl;
 }
 
+int effectiveFeatureChannels(const FeatureConfig& features)
+{
+    int channels = 0;
+    if (features.hog_enabled) {
+        channels += features.hog_channels;
+    }
+    if (features.cn_enabled) {
+        channels += features.cn_channels;
+    }
+    return channels;
+}
+
 }  // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
-    if (ANNOTATION_PATH.empty()) {
-        std::cerr << "ANNOTATION_PATH is empty. Please set it before running RunKCF."
-                  << std::endl;
+    if (argc > 2) {
+        std::cerr << "Usage: RunKCF.exe [config_path]" << std::endl;
         return 1;
     }
 
-    const std::map<int, cv::Rect2f> groundTruth = loadGroundTruth(ANNOTATION_PATH);
+    const std::string configPath = argc == 2 ? argv[1] : DEFAULT_CONFIG_PATH;
+    AppConfig config;
+    std::string configError;
+    if (!loadAppConfig(configPath, config, configError)) {
+        std::cerr << "Failed to load config: " << configError << std::endl;
+        return 1;
+    }
+
+    std::cout << "effective_feature_channels="
+              << effectiveFeatureChannels(config.features)
+              << std::endl;
+
+    const std::map<int, cv::Rect2f> groundTruth =
+        loadGroundTruth(config.input.annotation_path);
     if (groundTruth.empty()) {
         std::cerr << "No valid annotations loaded." << std::endl;
         return 1;
@@ -177,9 +194,9 @@ int main()
     const std::map<int, cv::Rect2f>::const_iterator firstTruth = groundTruth.begin();
     const int firstFrameNumber = firstTruth->first;
 
-    cv::VideoCapture capture(VIDEO_PATH);
+    cv::VideoCapture capture(config.input.video_path);
     if (!capture.isOpened()) {
-        std::cerr << "Failed to open video: " << VIDEO_PATH << std::endl;
+        std::cerr << "Failed to open video: " << config.input.video_path << std::endl;
         return 1;
     }
 
@@ -190,31 +207,35 @@ int main()
     }
 
     cv::VideoWriter writer;
-    if (SAVE_VIDEO_OUTPUT) {
+    if (config.output.save_video) {
         double inputFps = capture.get(cv::CAP_PROP_FPS);
         if (inputFps <= 0.0) {
             inputFps = 30.0;
         }
 
-        writer.open(OUTPUT_VIDEO_PATH,
+        writer.open(config.output.video_path,
                     cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
                     inputFps,
                     frame.size());
         if (!writer.isOpened()) {
-            std::cerr << "Failed to open output video: " << OUTPUT_VIDEO_PATH
+            std::cerr << "Failed to open output video: " << config.output.video_path
                       << std::endl;
             return 1;
         }
     }
 
-    KCFTracker tracker(HOG, FIXEDWINDOW, MULTISCALE, LAB);
+    KCFTracker tracker(config.tracker, config.features);
     const cv::Rect2f initBox = firstTruth->second;
-    tracker.init(rect2fToRect(initBox), frame);
+    try {
+        tracker.init(rect2fToRect(initBox), frame);
+    } catch (const std::exception& ex) {
+        std::cerr << "Tracker initialization failed: " << ex.what() << std::endl;
+        return 1;
+    }
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Running KCF evaluation" << std::endl;
-    std::cout << "video=" << VIDEO_PATH << std::endl;
-    std::cout << "annotation=" << ANNOTATION_PATH << std::endl;
+    printAppConfig(configPath, config);
 
     int evaluatedFrames = 0;
     int updateFrames = 0;
@@ -234,7 +255,7 @@ int main()
     }
     printFrameMetrics(firstFrameNumber, 0.0, cle, iou);
 
-    if (SAVE_VIDEO_OUTPUT) {
+    if (config.output.save_video) {
         const cv::Rect predictedDrawBox = clampRectToFrame(predictedBox, frame.size());
         const cv::Rect truthDrawBox = clampRectToFrame(firstTruth->second, frame.size());
         if (predictedDrawBox.area() > 0) {
@@ -264,8 +285,16 @@ int main()
 
         cv::TickMeter timer;
         timer.start();
-        const cv::Rect result = tracker.update(frame);
-        timer.stop();
+        cv::Rect result;
+        try {
+            result = tracker.update(frame);
+            timer.stop();
+        } catch (const std::exception& ex) {
+            timer.stop();
+            std::cerr << "Tracker update failed at frame " << frameIndex
+                      << ": " << ex.what() << std::endl;
+            return 1;
+        }
 
         const double kcfTimeMs = timer.getTimeMilli();
         predictedBox = cv::Rect2f(static_cast<float>(result.x),
@@ -287,7 +316,7 @@ int main()
 
         printFrameMetrics(frameIndex, kcfTimeMs, cle, iou);
 
-        if (SAVE_VIDEO_OUTPUT) {
+        if (config.output.save_video) {
             const cv::Rect predictedDrawBox = clampRectToFrame(predictedBox, frame.size());
             const cv::Rect truthDrawBox = clampRectToFrame(truthBox, frame.size());
             if (predictedDrawBox.area() > 0) {
@@ -315,6 +344,21 @@ int main()
 
     std::cout << std::endl;
     std::cout << "Summary" << std::endl;
+    std::cout << "experiment=" << config.experiment.name << std::endl;
+    std::cout << "config=" << configPath << std::endl;
+    std::cout << "hog_channels="
+              << (config.features.hog_enabled ? config.features.hog_channels : 0)
+              << std::endl;
+    std::cout << "cn_enabled="
+              << (config.features.cn_enabled ? "true" : "false") << std::endl;
+    std::cout << "cn_channels="
+              << (config.features.cn_enabled ? config.features.cn_channels : 0)
+              << std::endl;
+    std::cout << "effective_feature_channels="
+              << effectiveFeatureChannels(config.features) << std::endl;
+    std::cout << "lab_enabled="
+              << (config.features.lab_enabled ? "true" : "false") << std::endl;
+    std::cout << "fusion_mode=" << config.features.fusion_mode << std::endl;
     std::cout << "evaluated_frames=" << evaluatedFrames << std::endl;
     std::cout << "update_frames=" << updateFrames << std::endl;
     std::cout << "avg_kcf_ms=" << averageKcfTimeMs << std::endl;

@@ -184,6 +184,12 @@ int normalizeAndTruncate(CvLSVMFeatureMapCaskade *map, const float alfa);
 */
 int PCAFeatureMaps(CvLSVMFeatureMapCaskade *map);
 
+/*
+// Select the first N channels from an existing feature map.
+// Used by Phase 2.2 to define HOG18 as the first 18 channels of FHOG31.
+*/
+int selectFeatureMapChannels(CvLSVMFeatureMapCaskade *map, const int selectedFeatures);
+
 
 //modified from "lsvmc_routine.h"
 

@@ -18,6 +18,8 @@ endif()
 include_directories(src)
 
 set(KCF_CORE_SOURCES
+    src/cn_data.cpp
+    src/cn_feature.cpp
     src/fhog.cpp
     src/kcftracker.cpp
 )
@@ -30,9 +32,23 @@ target_link_libraries(KCF ${OpenCV_LIBS})
 
 add_executable(RunKCF
     src/runkcf.cpp
+    src/app_config.cpp
     ${KCF_CORE_SOURCES}
 )
 target_link_libraries(RunKCF ${OpenCV_LIBS})
+
+add_executable(HogFeatureTests
+    tests/hog_feature_tests.cpp
+    src/fhog.cpp
+)
+target_link_libraries(HogFeatureTests ${OpenCV_LIBS})
+
+add_executable(CnFeatureTests
+    tests/cn_feature_tests.cpp
+    src/cn_data.cpp
+    src/cn_feature.cpp
+)
+target_link_libraries(CnFeatureTests ${OpenCV_LIBS})
 
 # Copy OpenCV DLL to output directory so the executable runs from VS
 if(WIN32 AND MSVC)
@@ -45,6 +61,16 @@ if(WIN32 AND MSVC)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
             "$<TARGET_FILE_DIR:RunKCF>"
+    )
+    add_custom_command(TARGET HogFeatureTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
+            "$<TARGET_FILE_DIR:HogFeatureTests>"
+    )
+    add_custom_command(TARGET CnFeatureTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
+            "$<TARGET_FILE_DIR:CnFeatureTests>"
     )
 endif()
 

@@ -1,0 +1,28 @@
+---
+experiment:
+  name: hog18_cn4
+  description: KCF with requested 18-channel HOG and 4-channel CN configuration
+
+input:
+  video_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/source/d4.mp4"
+  annotation_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/source/d4.txt"
+
+output:
+  save_video: 0
+  video_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/run/runkcf_output.mp4"
+
+tracker:
+  fixed_window: 0
+  multiscale: 1
+
+features:
+  hog:
+    enabled: 1
+    channels: 18
+  cn:
+    enabled: 1
+    channels: 4
+  lab:
+    enabled: 0
+  fusion:
+    mode: concat

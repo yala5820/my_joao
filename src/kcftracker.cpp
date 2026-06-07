@@ -82,15 +82,65 @@ the use of this software, even if advised of the possibility of such damage.
 
 #ifndef _KCFTRACKER_HEADERS
 #include "kcftracker.hpp"
+#include "cn_feature.hpp"
 #include "ffttools.hpp"
 #include "recttools.hpp"
 #include "fhog.hpp"
 #include "labdata.hpp"
 #endif
 
+#include <sstream>
+#include <stdexcept>
+
+namespace {
+
+void releaseFeatureMap(CvLSVMFeatureMapCaskade** map)
+{
+    if (map != 0 && *map != 0) {
+        freeFeatureMapObject(map);
+    }
+}
+
+void requireFhogStepOk(const char* step,
+                       int status,
+                       CvLSVMFeatureMapCaskade** map)
+{
+    if (status == LATENT_SVM_OK && map != 0 && *map != 0 && (*map)->map != 0) {
+        return;
+    }
+
+    releaseFeatureMap(map);
+
+    std::ostringstream message;
+    message << "FHOG feature extraction failed at " << step
+            << ", status=" << status;
+    throw std::runtime_error(message.str());
+}
+
+void requireFeatureColumnCount(const char* feature_name,
+                               const cv::Mat& feature_map,
+                               int expected_columns)
+{
+    if (feature_map.cols == expected_columns) {
+        return;
+    }
+
+    std::ostringstream message;
+    message << feature_name << " feature extraction produced "
+            << feature_map.cols << " cells, expected "
+            << expected_columns;
+    throw std::runtime_error(message.str());
+}
+
+}  // namespace
+
 // Constructor
 KCFTracker::KCFTracker(bool hog, bool fixed_window, bool multiscale, bool lab)
 {
+    _hogChannels = hog ? 31 : 0;
+    _cnfeatures = false;
+    _cnChannels = 0;
+    _fusionMode = "concat";
 
     // Parameters equal in all cases
     lambda = 0.0001;
@@ -155,6 +205,19 @@ KCFTracker::KCFTracker(bool hog, bool fixed_window, bool multiscale, bool lab)
         template_size = 1;
         scale_step = 1;
     }
+}
+
+KCFTracker::KCFTracker(const TrackerConfig& tracker_config,
+                       const FeatureConfig& feature_config)
+    : KCFTracker(feature_config.hog_enabled,
+                 tracker_config.fixed_window,
+                 tracker_config.multiscale,
+                 feature_config.lab_enabled)
+{
+    _hogChannels = feature_config.hog_enabled ? feature_config.hog_channels : 0;
+    _cnfeatures = feature_config.cn_enabled;
+    _cnChannels = feature_config.cn_enabled ? feature_config.cn_channels : 0;
+    _fusionMode = feature_config.fusion_mode;
 }
 
 // Initialize tracker 
@@ -403,10 +466,20 @@ cv::Mat KCFTracker::getFeatures(const cv::Mat & image, bool inithann, float scal
 
     // HOG features
     if (_hogfeatures) {
-        CvLSVMFeatureMapCaskade *map;
-        getFeatureMaps(z, cell_size, &map);
-        normalizeAndTruncate(map,0.2f);
-        PCAFeatureMaps(map);
+        CvLSVMFeatureMapCaskade *map = 0;
+        int status = getFeatureMaps(z, cell_size, &map);
+        requireFhogStepOk("getFeatureMaps", status, &map);
+
+        status = normalizeAndTruncate(map,0.2f);
+        requireFhogStepOk("normalizeAndTruncate", status, &map);
+
+        status = PCAFeatureMaps(map);
+        requireFhogStepOk("PCAFeatureMaps", status, &map);
+
+        if (_hogChannels > 0 && _hogChannels != map->numFeatures) {
+            status = selectFeatureMapChannels(map, _hogChannels);
+            requireFhogStepOk("selectFeatureMapChannels", status, &map);
+        }
         size_patch[0] = map->sizeY;
         size_patch[1] = map->sizeX;
         size_patch[2] = map->numFeatures;
@@ -414,6 +487,13 @@ cv::Mat KCFTracker::getFeatures(const cv::Mat & image, bool inithann, float scal
         FeaturesMap = cv::Mat(cv::Size(map->numFeatures,map->sizeX*map->sizeY), CV_32F, map->map);  // Procedure do deal with cv::Mat multichannel bug
         FeaturesMap = FeaturesMap.t();
         freeFeatureMapObject(&map);
+
+        if (_cnfeatures) {
+            cv::Mat outputCn = extractCnFeatureMap(z, cell_size, _cnChannels);
+            requireFeatureColumnCount("CN", outputCn, size_patch[0] * size_patch[1]);
+            size_patch[2] += outputCn.rows;
+            FeaturesMap.push_back(outputCn);
+        }
 
         // Lab features
         if (_labfeatures) {
