@@ -20,6 +20,7 @@ include_directories(src)
 set(KCF_CORE_SOURCES
     src/cn_data.cpp
     src/cn_feature.cpp
+    src/confidence.cpp
     src/fhog.cpp
     src/kcftracker.cpp
 )
@@ -60,6 +61,12 @@ add_executable(DatasetIOTests
 )
 target_link_libraries(DatasetIOTests ${OpenCV_LIBS})
 
+add_executable(ConfidenceTests
+    tests/confidence_tests.cpp
+    src/confidence.cpp
+)
+target_link_libraries(ConfidenceTests ${OpenCV_LIBS})
+
 # Copy OpenCV DLL to output directory so the executable runs from VS
 if(WIN32 AND MSVC)
     add_custom_command(TARGET KCF POST_BUILD
@@ -86,6 +93,11 @@ if(WIN32 AND MSVC)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
             "$<TARGET_FILE_DIR:DatasetIOTests>"
+    )
+    add_custom_command(TARGET ConfidenceTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
+            "$<TARGET_FILE_DIR:ConfidenceTests>"
     )
 endif()
 

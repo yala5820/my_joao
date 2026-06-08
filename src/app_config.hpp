@@ -36,12 +36,27 @@ struct FeatureConfig {
     std::string fusion_mode;
 };
 
+struct ConfidenceConfig {
+    bool enabled = false;
+    int psr_exclusion_radius = 5;
+    float eps = 0.000001f;
+    int warmup_frames = 5;
+    float ema_alpha = 0.05f;
+    float medium_ema_alpha = 0.0f;
+    float high_ratio = 0.95f;
+    float low_ratio = 0.60f;
+    float medium_lr_factor = 0.30f;
+    float low_displacement_threshold = 0.50f;
+    float low_displacement_damping = 0.50f;
+};
+
 struct AppConfig {
     ExperimentConfig experiment;
     InputConfig input;
     OutputConfig output;
     TrackerConfig tracker;
     FeatureConfig features;
+    ConfidenceConfig confidence;
 };
 
 bool loadAppConfig(const std::string& path, AppConfig& config, std::string& error);

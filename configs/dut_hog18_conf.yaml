@@ -1,0 +1,44 @@
+experiment:
+  name: dut_hog18_conf
+  description: DUT AUAV video14 image sequence with 18-channel FHOG and confidence-controlled update
+
+input:
+  type: image_sequence
+  image_dir: "C:/Users/yala5/Desktop/auav_data/dut_auav_data/V0/video14"
+  image_extension: ".jpg"
+  image_start_index: 1
+  image_index_digits: 5
+  annotation_path: "C:/Users/yala5/Desktop/auav_data/dut_auav_data/V0GT/video14_gt.txt"
+
+output:
+  save_video: 1
+  video_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/run/dut_output.mp4"
+
+tracker:
+  fixed_window: 0
+  multiscale: 1
+
+features:
+  hog:
+    enabled: 1
+    channels: 18
+  cn:
+    enabled: 0
+    channels: 0
+  lab:
+    enabled: 0
+  fusion:
+    mode: concat
+
+confidence:
+  enabled: 1
+  psr_exclusion_radius: 4
+  eps: 0.000001
+  warmup_frames: 12
+  ema_alpha: 0.08
+  medium_ema_alpha: 0.02
+  high_ratio: 0.90
+  low_ratio: 0.35
+  medium_lr_factor: 0.60
+  low_displacement_threshold: 0.50
+  low_displacement_damping: 0.50

@@ -89,6 +89,8 @@ the use of this software, even if advised of the possibility of such damage.
 #include "labdata.hpp"
 #endif
 
+#include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 
@@ -132,6 +134,25 @@ void requireFeatureColumnCount(const char* feature_name,
     throw std::runtime_error(message.str());
 }
 
+cv::Point2f rectCenter(const cv::Rect2f& box)
+{
+    return cv::Point2f(box.x + box.width * 0.5f,
+                       box.y + box.height * 0.5f);
+}
+
+float rectDiagonal(const cv::Rect2f& box)
+{
+    return std::sqrt(box.width * box.width + box.height * box.height);
+}
+
+void clampTrackerRoi(cv::Rect2f& roi, const cv::Mat& image)
+{
+    if (roi.x >= image.cols - 1) roi.x = image.cols - 1;
+    if (roi.y >= image.rows - 1) roi.y = image.rows - 1;
+    if (roi.x + roi.width <= 0) roi.x = -roi.width + 2;
+    if (roi.y + roi.height <= 0) roi.y = -roi.height + 2;
+}
+
 }  // namespace
 
 // Constructor
@@ -141,6 +162,9 @@ KCFTracker::KCFTracker(bool hog, bool fixed_window, bool multiscale, bool lab)
     _cnfeatures = false;
     _cnChannels = 0;
     _fusionMode = "concat";
+    _confidenceConfig = ConfidenceConfig();
+    _confidenceEstimator = ConfidenceEstimator(_confidenceConfig);
+    _lastDiagnostics = makeDefaultConfidenceDiagnostics(false);
 
     // Parameters equal in all cases
     lambda = 0.0001;
@@ -220,10 +244,29 @@ KCFTracker::KCFTracker(const TrackerConfig& tracker_config,
     _fusionMode = feature_config.fusion_mode;
 }
 
+KCFTracker::KCFTracker(const TrackerConfig& tracker_config,
+                       const FeatureConfig& feature_config,
+                       const ConfidenceConfig& confidence_config)
+    : KCFTracker(feature_config.hog_enabled,
+                 tracker_config.fixed_window,
+                 tracker_config.multiscale,
+                 feature_config.lab_enabled)
+{
+    _hogChannels = feature_config.hog_enabled ? feature_config.hog_channels : 0;
+    _cnfeatures = feature_config.cn_enabled;
+    _cnChannels = feature_config.cn_enabled ? feature_config.cn_channels : 0;
+    _fusionMode = feature_config.fusion_mode;
+    _confidenceConfig = confidence_config;
+    _confidenceEstimator = ConfidenceEstimator(_confidenceConfig);
+    _lastDiagnostics = makeDefaultConfidenceDiagnostics(_confidenceConfig.enabled);
+}
+
 // Initialize tracker 
 void KCFTracker::init(const cv::Rect &roi, cv::Mat image)
 {
     _roi = roi;
+    _confidenceEstimator.reset();
+    _lastDiagnostics = makeDefaultConfidenceDiagnostics(_confidenceConfig.enabled);
     assert(roi.width >= 0 && roi.height >= 0);
     _tmpl = getFeatures(image, 1);
     _prob = createGaussianPeak(size_patch[0], size_patch[1]);
@@ -240,57 +283,135 @@ cv::Rect KCFTracker::update(cv::Mat image)
     if (_roi.x >= image.cols - 1) _roi.x = image.cols - 2;
     if (_roi.y >= image.rows - 1) _roi.y = image.rows - 2;
 
-    float cx = _roi.x + _roi.width / 2.0f;
-    float cy = _roi.y + _roi.height / 2.0f;
+    const cv::Rect2f previousRoi = _roi;
+    const float previousScale = _scale;
+    const float cx = previousRoi.x + previousRoi.width / 2.0f;
+    const float cy = previousRoi.y + previousRoi.height / 2.0f;
 
+    float peak_value = 0.0f;
+    ResponseStats responseStats;
+    cv::Point2f res =
+        detect(_tmpl, getFeatures(image, 0, 1.0f), peak_value, &responseStats);
 
-    float peak_value;
-    cv::Point2f res = detect(_tmpl, getFeatures(image, 0, 1.0f), peak_value);
+    cv::Rect2f candidateRoi = previousRoi;
+    float candidateScale = previousScale;
 
     if (scale_step != 1) {
         // Test at a smaller _scale
-        float new_peak_value;
-        cv::Point2f new_res = detect(_tmpl, getFeatures(image, 0, 1.0f / scale_step), new_peak_value);
+        float new_peak_value = 0.0f;
+        ResponseStats newResponseStats;
+        cv::Point2f new_res = detect(_tmpl,
+                                     getFeatures(image, 0, 1.0f / scale_step),
+                                     new_peak_value,
+                                     &newResponseStats);
 
         if (scale_weight * new_peak_value > peak_value) {
             res = new_res;
             peak_value = new_peak_value;
-            _scale /= scale_step;
-            _roi.width /= scale_step;
-            _roi.height /= scale_step;
+            responseStats = newResponseStats;
+            candidateScale = previousScale / scale_step;
+            candidateRoi.width = previousRoi.width / scale_step;
+            candidateRoi.height = previousRoi.height / scale_step;
         }
 
         // Test at a bigger _scale
-        new_res = detect(_tmpl, getFeatures(image, 0, scale_step), new_peak_value);
+        new_res = detect(_tmpl,
+                         getFeatures(image, 0, scale_step),
+                         new_peak_value,
+                         &newResponseStats);
 
         if (scale_weight * new_peak_value > peak_value) {
             res = new_res;
             peak_value = new_peak_value;
-            _scale *= scale_step;
-            _roi.width *= scale_step;
-            _roi.height *= scale_step;
+            responseStats = newResponseStats;
+            candidateScale = previousScale * scale_step;
+            candidateRoi.width = previousRoi.width * scale_step;
+            candidateRoi.height = previousRoi.height * scale_step;
         }
     }
 
-    // Adjust by cell size and _scale
-    _roi.x = cx - _roi.width / 2.0f + ((float) res.x * cell_size * _scale);
-    _roi.y = cy - _roi.height / 2.0f + ((float) res.y * cell_size * _scale);
+    candidateRoi.x = cx - candidateRoi.width / 2.0f +
+                     ((float) res.x * cell_size * candidateScale);
+    candidateRoi.y = cy - candidateRoi.height / 2.0f +
+                     ((float) res.y * cell_size * candidateScale);
+    clampTrackerRoi(candidateRoi, image);
 
-    if (_roi.x >= image.cols - 1) _roi.x = image.cols - 1;
-    if (_roi.y >= image.rows - 1) _roi.y = image.rows - 1;
-    if (_roi.x + _roi.width <= 0) _roi.x = -_roi.width + 2;
-    if (_roi.y + _roi.height <= 0) _roi.y = -_roi.height + 2;
+    ConfidenceDiagnostics diagnostics = _confidenceEstimator.evaluate(responseStats);
+    const cv::Point2f previousCenter = rectCenter(previousRoi);
+    const cv::Point2f candidateCenter = rectCenter(candidateRoi);
+    const float dx = candidateCenter.x - previousCenter.x;
+    const float dy = candidateCenter.y - previousCenter.y;
+    const float centerShift = std::sqrt(dx * dx + dy * dy);
+    const float diagonal = std::max(rectDiagonal(previousRoi), 1.0f);
+    diagnostics.displacement_ratio = centerShift / diagonal;
+
+    float trainInterpFactor = interp_factor;
+    bool updateTemplate = true;
+    bool updateScale = candidateScale != previousScale;
+
+    if (!_confidenceConfig.enabled ||
+        diagnostics.confidence_level == ConfidenceLevel::Disabled) {
+        _roi = candidateRoi;
+        _scale = candidateScale;
+        diagnostics.position_action = PositionAction::Disabled;
+    } else if (diagnostics.confidence_level == ConfidenceLevel::Warmup ||
+               diagnostics.confidence_level == ConfidenceLevel::High) {
+        _roi = candidateRoi;
+        _scale = candidateScale;
+        diagnostics.position_action = PositionAction::Accept;
+    } else if (diagnostics.confidence_level == ConfidenceLevel::Medium) {
+        _roi = candidateRoi;
+        _scale = candidateScale;
+        trainInterpFactor = interp_factor * _confidenceConfig.medium_lr_factor;
+        diagnostics.position_action = PositionAction::Accept;
+    } else {
+        updateTemplate = false;
+        trainInterpFactor = 0.0f;
+        updateScale = false;
+        _scale = previousScale;
+
+        if (diagnostics.displacement_ratio <= _confidenceConfig.low_displacement_threshold) {
+            const float damping = _confidenceConfig.low_displacement_damping;
+            const cv::Point2f dampedCenter(previousCenter.x + dx * damping,
+                                           previousCenter.y + dy * damping);
+            _roi = previousRoi;
+            _roi.x = dampedCenter.x - _roi.width / 2.0f;
+            _roi.y = dampedCenter.y - _roi.height / 2.0f;
+            clampTrackerRoi(_roi, image);
+            diagnostics.position_action = PositionAction::Damped;
+        } else {
+            _roi = previousRoi;
+            diagnostics.position_action = PositionAction::Reject;
+        }
+    }
 
     assert(_roi.width >= 0 && _roi.height >= 0);
-    cv::Mat x = getFeatures(image, 0);
-    train(x, interp_factor);
+    if (updateTemplate && trainInterpFactor > 0.0f) {
+        cv::Mat x = getFeatures(image, 0);
+        train(x, trainInterpFactor);
+        diagnostics.template_updated = true;
+    } else {
+        diagnostics.template_updated = false;
+    }
+
+    diagnostics.effective_learning_rate = trainInterpFactor;
+    diagnostics.scale_updated = updateScale;
+    _lastDiagnostics = diagnostics;
 
     return _roi;
 }
 
 
+ConfidenceDiagnostics KCFTracker::lastDiagnostics() const
+{
+    return _lastDiagnostics;
+}
+
 // Detect object in the current frame.
-cv::Point2f KCFTracker::detect(cv::Mat z, cv::Mat x, float &peak_value)
+cv::Point2f KCFTracker::detect(cv::Mat z,
+                               cv::Mat x,
+                               float &peak_value,
+                               ResponseStats* response_stats)
 {
     using namespace FFTTools;
 
@@ -302,6 +423,11 @@ cv::Point2f KCFTracker::detect(cv::Mat z, cv::Mat x, float &peak_value)
     double pv;
     cv::minMaxLoc(res, NULL, &pv, NULL, &pi);
     peak_value = (float) pv;
+    if (response_stats != 0) {
+        *response_stats = computeResponseStats(res,
+                                               _confidenceConfig.psr_exclusion_radius,
+                                               _confidenceConfig.eps);
+    }
 
     //subpixel peak estimation, coordinates will be non-integer
     cv::Point2f p((float)pi.x, (float)pi.y);

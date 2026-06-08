@@ -150,7 +150,8 @@ void printFrameMetrics(int frameIndex,
                        double kcfTimeMs,
                        bool hasTruth,
                        double cle,
-                       double iou)
+                       double iou,
+                       const ConfidenceDiagnostics& diagnostics)
 {
     std::cout << "frame=" << frameIndex
               << ", load_ms=" << loadTimeMs
@@ -160,6 +161,21 @@ void printFrameMetrics(int frameIndex,
         std::cout << ", CLE=" << cle
                   << ", IoU=" << iou;
     }
+    std::cout << ", peak=" << diagnostics.peak
+              << ", PSR=" << diagnostics.psr
+              << ", APCE=" << diagnostics.apce
+              << ", psr_ema=" << diagnostics.psr_ema
+              << ", apce_ema=" << diagnostics.apce_ema
+              << ", confidence=" << confidenceLevelName(diagnostics.confidence_level)
+              << ", displacement_ratio=" << diagnostics.displacement_ratio
+              << ", lr=" << diagnostics.effective_learning_rate
+              << ", action=" << positionActionName(diagnostics.position_action)
+              << ", template_updated="
+              << (diagnostics.template_updated ? "true" : "false")
+              << ", scale_updated="
+              << (diagnostics.scale_updated ? "true" : "false")
+              << ", ema_updated="
+              << (diagnostics.ema_updated ? "true" : "false");
     std::cout << std::endl;
 }
 
@@ -426,7 +442,7 @@ int main(int argc, char* argv[])
         }
     }
 
-    KCFTracker tracker(config.tracker, config.features);
+    KCFTracker tracker(config.tracker, config.features, config.confidence);
     const cv::Rect2f initBox = firstTruth->second;
     try {
         tracker.init(rect2fToRect(initBox), frame);
@@ -455,7 +471,13 @@ int main(int argc, char* argv[])
     if (cle < 2.0) {
         ++cleBelowTwoFrames;
     }
-    printFrameMetrics(firstFrameNumber, frameData.load_time_ms, 0.0, true, cle, iou);
+    printFrameMetrics(firstFrameNumber,
+                      frameData.load_time_ms,
+                      0.0,
+                      true,
+                      cle,
+                      iou,
+                      tracker.lastDiagnostics());
 
     if (config.output.save_video) {
         const cv::Rect predictedDrawBox = clampRectToFrame(predictedBox, frame.size());
@@ -517,7 +539,13 @@ int main(int argc, char* argv[])
             }
         }
 
-        printFrameMetrics(frameIndex, frameData.load_time_ms, kcfTimeMs, hasTruth, cle, iou);
+        printFrameMetrics(frameIndex,
+                          frameData.load_time_ms,
+                          kcfTimeMs,
+                          hasTruth,
+                          cle,
+                          iou,
+                          tracker.lastDiagnostics());
 
         if (config.output.save_video) {
             const cv::Rect predictedDrawBox = clampRectToFrame(predictedBox, frame.size());
@@ -570,6 +598,8 @@ int main(int argc, char* argv[])
     std::cout << "lab_enabled="
               << (config.features.lab_enabled ? "true" : "false") << std::endl;
     std::cout << "fusion_mode=" << config.features.fusion_mode << std::endl;
+    std::cout << "confidence_enabled="
+              << (config.confidence.enabled ? "true" : "false") << std::endl;
     std::cout << "processed_frames=" << processedFrames << std::endl;
     std::cout << "loaded_frames=" << loadedFrames << std::endl;
     std::cout << "evaluated_frames=" << evaluatedFrames << std::endl;

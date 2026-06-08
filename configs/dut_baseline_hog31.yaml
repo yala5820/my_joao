@@ -1,6 +1,6 @@
 experiment:
-  name: dut_video14_hog31_cn4
-  description: DUT AUAV video14 image sequence with 31-channel FHOG and 4-channel CN
+  name: dut_baseline_hog31
+  description: DUT AUAV video14 image sequence with 31-channel FHOG
 
 input:
   type: image_sequence
@@ -12,7 +12,7 @@ input:
 
 output:
   save_video: 0
-  video_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/run/dut_video14_output.mp4"
+  video_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/run/dut_output.mp4"
 
 tracker:
   fixed_window: 0
@@ -23,8 +23,8 @@ features:
     enabled: 1
     channels: 31
   cn:
-    enabled: 1
-    channels: 4
+    enabled: 0
+    channels: 0
   lab:
     enabled: 0
   fusion:

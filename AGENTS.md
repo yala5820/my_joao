@@ -21,6 +21,7 @@
 - `hog31_cn4.yaml` 与 `hog18_cn4.yaml` 已能成功运行并输出 Summary。
 - 当前 CN4 使用固定、可复现的 CN11 近似查表和 PCA4 投影，不是原始 `w2c.mat` 数值表。
 - `RunKCF` 已支持两类输入源：视频文件和图片序列文件夹。
+- Phase 3 置信度机制已接入 `hog18_conf.yaml` 与 `hog18_cn4_conf.yaml`，使用 `peak / PSR / APCE / EMA` 控制位置、scale、模板更新和学习率。
 
 技术栈：
 
@@ -59,6 +60,7 @@ src/kcftracker.*       KCFTracker 核心跟踪逻辑
 src/fhog.*             FHOG 特征提取与 HOG18 通道裁剪
 src/cn_feature.*       CN4 颜色特征提取
 src/cn_data.*          CN11 查表与 PCA4 投影数据
+src/confidence.*       peak、PSR、APCE、EMA 和置信度分级
 src/app_config.*       YAML 配置读取与校验
 src/annotation_loader.* 标注文件读取，兼容 5 值显式帧号和 4 值逐行帧号
 src/frame_source.*     视频帧源与图片序列帧源
@@ -71,6 +73,7 @@ KCF
 RunKCF
 HogFeatureTests
 CnFeatureTests
+ConfidenceTests
 DatasetIOTests
 ```
 
@@ -108,6 +111,12 @@ cmake --preset vs2022-debug
 .\out\build\vs2022-debug\DatasetIOTests.exe
 ```
 
+运行置信度测试：
+
+```powershell
+.\out\build\vs2022-debug\ConfidenceTests.exe
+```
+
 运行评估：
 
 ```powershell
@@ -115,6 +124,8 @@ cmake --preset vs2022-debug
 .\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog18.yaml
 .\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog31_cn4.yaml
 .\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog18_cn4.yaml
+.\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog18_conf.yaml
+.\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog18_cn4_conf.yaml
 ```
 
 可用配置：
@@ -124,10 +135,14 @@ configs/baseline_hog31.yaml
 configs/hog18.yaml
 configs/hog31_cn4.yaml
 configs/hog18_cn4.yaml
-configs/dut_video14_baseline_hog31.yaml
-configs/dut_video14_hog18.yaml
-configs/dut_video14_hog31_cn4.yaml
-configs/dut_video14_hog18_cn4.yaml
+configs/hog18_conf.yaml
+configs/hog18_cn4_conf.yaml
+configs/dut_baseline_hog31.yaml
+configs/dut_hog18.yaml
+configs/dut_hog31_cn4.yaml
+configs/dut_hog18_cn4.yaml
+configs/dut_hog18_conf.yaml
+configs/dut_hog18_cn4_conf.yaml
 ```
 
 输入源说明：
@@ -138,6 +153,8 @@ configs/dut_video14_hog18_cn4.yaml
 - `RunKCF` 输出 `load_ms` 和 `avg_frame_load_ms`，但 `kcf_ms` 仍只统计 `tracker.update(frame)`。
 - `RunKCF` 每次运行都会把终端指标同步保存到 `run/output_data/<运行时间>.txt`；当 `output.save_video: 1` 时，视频统一保存到 `run/output_video/<运行时间>.mp4`。
 - 输出文件名基于运行开始时间，格式如 `20260607_2124`；同一分钟多次运行时追加 `_01`、`_02` 等后缀，避免覆盖已有结果。
+- 开启 `confidence.enabled: 1` 后，逐帧输出会追加 `peak`、`PSR`、`APCE`、`psr_ema`、`apce_ema`、`confidence`、`displacement_ratio`、`lr`、`action`、`template_updated`、`scale_updated`、`ema_updated`。
+- Phase 3 只继续改进 `hog18` 与 `hog18_cn4` 两条实验线，不继续新增 `hog31` 置信度配置。
 
 构建注意：
 
@@ -158,4 +175,5 @@ configs/dut_video14_hog18_cn4.yaml
 - 新增实验变量必须通过配置控制，避免硬编码分散在多个函数里。
 - CN4 已实现，但当前为固定近似 CN11 查表 + PCA4 投影；若论文需要严格 Color Names 口径，应替换为标准 `w2c` 表。
 - 当前不支持 CN-only，`features.cn.enabled: 1` 时必须同时启用 HOG。
+- 置信度实验变量必须集中写在 YAML 的 `confidence` 段；旧配置缺少该段时应保持 `confidence.enabled: 0` 的原始行为。
 - 构建或测试卡住时，必须主动诊断进程、锁文件和日志，不能长时间等待同一条命令。

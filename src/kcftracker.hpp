@@ -83,6 +83,7 @@ the use of this software, even if advised of the possibility of such damage.
 #pragma once
 
 #include "app_config.hpp"
+#include "confidence.hpp"
 #include "tracker.h"
 
 #ifndef _OPENCV_KCFTRACKER_HPP_
@@ -95,12 +96,17 @@ public:
     // Constructor
     KCFTracker(bool hog = true, bool fixed_window = true, bool multiscale = true, bool lab = true);
     KCFTracker(const TrackerConfig& tracker_config, const FeatureConfig& feature_config);
+    KCFTracker(const TrackerConfig& tracker_config,
+               const FeatureConfig& feature_config,
+               const ConfidenceConfig& confidence_config);
 
     // Initialize tracker 
     virtual void init(const cv::Rect &roi, cv::Mat image);
     
     // Update position based on the new frame
     virtual cv::Rect update(cv::Mat image);
+
+    ConfidenceDiagnostics lastDiagnostics() const;
 
     float interp_factor; // linear interpolation factor for adaptation
     float sigma; // gaussian kernel bandwidth
@@ -115,7 +121,10 @@ public:
 
 protected:
     // Detect object in the current frame.
-    cv::Point2f detect(cv::Mat z, cv::Mat x, float &peak_value);
+    cv::Point2f detect(cv::Mat z,
+                       cv::Mat x,
+                       float &peak_value,
+                       ResponseStats* response_stats = 0);
 
     // train tracker with a single image
     void train(cv::Mat x, float train_interp_factor);
@@ -154,4 +163,7 @@ private:
     bool _cnfeatures;
     int _cnChannels;
     std::string _fusionMode;
+    ConfidenceConfig _confidenceConfig;
+    ConfidenceEstimator _confidenceEstimator;
+    ConfidenceDiagnostics _lastDiagnostics;
 };

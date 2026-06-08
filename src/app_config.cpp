@@ -199,6 +199,12 @@ bool readOptionalString(const std::map<std::string, std::string>& values,
     return true;
 }
 
+bool readOptionalBool(const std::map<std::string, std::string>& values,
+                      const std::string& key,
+                      bool defaultValue,
+                      bool& value,
+                      std::string& error);
+
 bool readRequiredInt(const std::map<std::string, std::string>& values,
                      const std::string& key,
                      int& value,
@@ -220,6 +226,27 @@ bool readRequiredInt(const std::map<std::string, std::string>& values,
     return true;
 }
 
+bool readRequiredFloat(const std::map<std::string, std::string>& values,
+                       const std::string& key,
+                       float& value,
+                       std::string& error)
+{
+    std::map<std::string, std::string>::const_iterator it = values.find(key);
+    if (it == values.end()) {
+        error = "Missing required config field: " + key;
+        return false;
+    }
+
+    char* end = NULL;
+    const double parsed = std::strtod(it->second.c_str(), &end);
+    if (end == it->second.c_str() || *end != '\0') {
+        error = "Invalid float value for config field: " + key;
+        return false;
+    }
+    value = static_cast<float>(parsed);
+    return true;
+}
+
 bool readOptionalInt(const std::map<std::string, std::string>& values,
                      const std::string& key,
                      int defaultValue,
@@ -231,6 +258,19 @@ bool readOptionalInt(const std::map<std::string, std::string>& values,
         return true;
     }
     return readRequiredInt(values, key, value, error);
+}
+
+bool readOptionalFloat(const std::map<std::string, std::string>& values,
+                       const std::string& key,
+                       float defaultValue,
+                       float& value,
+                       std::string& error)
+{
+    if (values.find(key) == values.end()) {
+        value = defaultValue;
+        return true;
+    }
+    return readRequiredFloat(values, key, value, error);
 }
 
 bool readRequiredBool(const std::map<std::string, std::string>& values,
@@ -256,6 +296,19 @@ bool readRequiredBool(const std::map<std::string, std::string>& values,
 
     error = "Invalid boolean value for config field: " + key;
     return false;
+}
+
+bool readOptionalBool(const std::map<std::string, std::string>& values,
+                      const std::string& key,
+                      bool defaultValue,
+                      bool& value,
+                      std::string& error)
+{
+    if (values.find(key) == values.end()) {
+        value = defaultValue;
+        return true;
+    }
+    return readRequiredBool(values, key, value, error);
 }
 
 bool validateAppConfig(const AppConfig& config, std::string& error)
@@ -322,6 +375,48 @@ bool validateAppConfig(const AppConfig& config, std::string& error)
         error = "features.fusion.mode must be concat.";
         return false;
     }
+    if (config.confidence.psr_exclusion_radius < 0) {
+        error = "confidence.psr_exclusion_radius must be non-negative.";
+        return false;
+    }
+    if (config.confidence.eps <= 0.0f) {
+        error = "confidence.eps must be positive.";
+        return false;
+    }
+    if (config.confidence.warmup_frames <= 0) {
+        error = "confidence.warmup_frames must be positive.";
+        return false;
+    }
+    if (config.confidence.ema_alpha < 0.0f ||
+        config.confidence.ema_alpha > 1.0f ||
+        config.confidence.medium_ema_alpha < 0.0f ||
+        config.confidence.medium_ema_alpha > 1.0f) {
+        error = "confidence EMA alpha values must be in [0, 1].";
+        return false;
+    }
+    if (config.confidence.high_ratio <= 0.0f ||
+        config.confidence.low_ratio <= 0.0f) {
+        error = "confidence ratio values must be positive.";
+        return false;
+    }
+    if (config.confidence.low_ratio > config.confidence.high_ratio) {
+        error = "confidence.low_ratio must be <= confidence.high_ratio.";
+        return false;
+    }
+    if (config.confidence.medium_lr_factor < 0.0f ||
+        config.confidence.medium_lr_factor > 1.0f) {
+        error = "confidence.medium_lr_factor must be in [0, 1].";
+        return false;
+    }
+    if (config.confidence.low_displacement_threshold < 0.0f) {
+        error = "confidence.low_displacement_threshold must be non-negative.";
+        return false;
+    }
+    if (config.confidence.low_displacement_damping < 0.0f ||
+        config.confidence.low_displacement_damping > 1.0f) {
+        error = "confidence.low_displacement_damping must be in [0, 1].";
+        return false;
+    }
     return true;
 }
 
@@ -361,6 +456,20 @@ bool loadAppConfig(const std::string& path, AppConfig& config, std::string& erro
         return false;
     }
 
+    if (!readOptionalBool(values, "confidence.enabled", false, config.confidence.enabled, error) ||
+        !readOptionalInt(values, "confidence.psr_exclusion_radius", 5, config.confidence.psr_exclusion_radius, error) ||
+        !readOptionalFloat(values, "confidence.eps", 0.000001f, config.confidence.eps, error) ||
+        !readOptionalInt(values, "confidence.warmup_frames", 5, config.confidence.warmup_frames, error) ||
+        !readOptionalFloat(values, "confidence.ema_alpha", 0.05f, config.confidence.ema_alpha, error) ||
+        !readOptionalFloat(values, "confidence.medium_ema_alpha", 0.0f, config.confidence.medium_ema_alpha, error) ||
+        !readOptionalFloat(values, "confidence.high_ratio", 0.95f, config.confidence.high_ratio, error) ||
+        !readOptionalFloat(values, "confidence.low_ratio", 0.60f, config.confidence.low_ratio, error) ||
+        !readOptionalFloat(values, "confidence.medium_lr_factor", 0.30f, config.confidence.medium_lr_factor, error) ||
+        !readOptionalFloat(values, "confidence.low_displacement_threshold", 0.50f, config.confidence.low_displacement_threshold, error) ||
+        !readOptionalFloat(values, "confidence.low_displacement_damping", 0.50f, config.confidence.low_displacement_damping, error)) {
+        return false;
+    }
+
     return validateAppConfig(config, error);
 }
 
@@ -386,4 +495,15 @@ void printAppConfig(const std::string& path, const AppConfig& config)
     std::cout << "cn.channels=" << config.features.cn_channels << std::endl;
     std::cout << "lab.enabled=" << (config.features.lab_enabled ? "true" : "false") << std::endl;
     std::cout << "fusion.mode=" << config.features.fusion_mode << std::endl;
+    std::cout << "confidence.enabled=" << (config.confidence.enabled ? "true" : "false") << std::endl;
+    std::cout << "confidence.psr_exclusion_radius=" << config.confidence.psr_exclusion_radius << std::endl;
+    std::cout << "confidence.eps=" << config.confidence.eps << std::endl;
+    std::cout << "confidence.warmup_frames=" << config.confidence.warmup_frames << std::endl;
+    std::cout << "confidence.ema_alpha=" << config.confidence.ema_alpha << std::endl;
+    std::cout << "confidence.medium_ema_alpha=" << config.confidence.medium_ema_alpha << std::endl;
+    std::cout << "confidence.high_ratio=" << config.confidence.high_ratio << std::endl;
+    std::cout << "confidence.low_ratio=" << config.confidence.low_ratio << std::endl;
+    std::cout << "confidence.medium_lr_factor=" << config.confidence.medium_lr_factor << std::endl;
+    std::cout << "confidence.low_displacement_threshold=" << config.confidence.low_displacement_threshold << std::endl;
+    std::cout << "confidence.low_displacement_damping=" << config.confidence.low_displacement_damping << std::endl;
 }

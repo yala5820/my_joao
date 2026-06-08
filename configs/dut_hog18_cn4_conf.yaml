@@ -1,6 +1,6 @@
 experiment:
-  name: dut_video14_hog18_cn4
-  description: DUT AUAV video14 image sequence with 18-channel FHOG and 4-channel CN
+  name: dut_hog18_cn4_conf
+  description: DUT AUAV video14 image sequence with 18-channel FHOG, 4-channel CN, and confidence-controlled update
 
 input:
   type: image_sequence
@@ -12,7 +12,7 @@ input:
 
 output:
   save_video: 0
-  video_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/run/dut_video14_output.mp4"
+  video_path: "D:/code/cpp/vs/myKCF/joaofaro/joao/run/dut_output.mp4"
 
 tracker:
   fixed_window: 0
@@ -29,3 +29,16 @@ features:
     enabled: 0
   fusion:
     mode: concat
+
+confidence:
+  enabled: 1
+  psr_exclusion_radius: 5
+  eps: 0.000001
+  warmup_frames: 5
+  ema_alpha: 0.05
+  medium_ema_alpha: 0.0
+  high_ratio: 0.95
+  low_ratio: 0.60
+  medium_lr_factor: 0.30
+  low_displacement_threshold: 0.50
+  low_displacement_damping: 0.50
