@@ -17,7 +17,10 @@
 - `RunKCF` 视频评估入口已实现。
 - YAML 外部配置入口已实现。
 - HOG31 / HOG18 可配置版本已实现。
-- CN4 仅有配置预留，特征提取尚未实现。
+- CN4 颜色特征已实现，并已接入 HOG + CN 通道级拼接。
+- `hog31_cn4.yaml` 与 `hog18_cn4.yaml` 已能成功运行并输出 Summary。
+- 当前 CN4 使用固定、可复现的 CN11 近似查表和 PCA4 投影，不是原始 `w2c.mat` 数值表。
+- `RunKCF` 已支持两类输入源：视频文件和图片序列文件夹。
 
 技术栈：
 
@@ -25,7 +28,7 @@
 - OpenCV 4.10
 - CMake + Ninja
 - Visual Studio 2022 / MSVC
-- YAML 配置使用 OpenCV `cv::FileStorage` 读取
+- YAML 配置由 `src/app_config.cpp` 的项目内轻量解析器读取，支持当前配置使用的缩进 map 和标量值；配置文件必须直接从顶层 key 开始，例如 `experiment:`，不要添加 `%YAML:1.0` 或 `---` 文件头
 
 ## 2. 项目的目录与入口
 
@@ -54,7 +57,11 @@ tests/hog_feature_tests.cpp  HOG 通道裁剪测试
 ```text
 src/kcftracker.*       KCFTracker 核心跟踪逻辑
 src/fhog.*             FHOG 特征提取与 HOG18 通道裁剪
+src/cn_feature.*       CN4 颜色特征提取
+src/cn_data.*          CN11 查表与 PCA4 投影数据
 src/app_config.*       YAML 配置读取与校验
+src/annotation_loader.* 标注文件读取，兼容 5 值显式帧号和 4 值逐行帧号
+src/frame_source.*     视频帧源与图片序列帧源
 ```
 
 当前 CMake 目标：
@@ -63,6 +70,8 @@ src/app_config.*       YAML 配置读取与校验
 KCF
 RunKCF
 HogFeatureTests
+CnFeatureTests
+DatasetIOTests
 ```
 
 不要把所有 `src/*.cpp` 直接合进同一个目标，否则 `runtracker.cpp` 和 `runkcf.cpp` 的两个 `main()` 会冲突。
@@ -87,11 +96,25 @@ cmake --preset vs2022-debug
 .\out\build\vs2022-debug\HogFeatureTests.exe
 ```
 
+运行 CN 测试：
+
+```powershell
+.\out\build\vs2022-debug\CnFeatureTests.exe
+```
+
+运行数据集输入测试：
+
+```powershell
+.\out\build\vs2022-debug\DatasetIOTests.exe
+```
+
 运行评估：
 
 ```powershell
 .\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\baseline_hog31.yaml
 .\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog18.yaml
+.\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog31_cn4.yaml
+.\out\build\vs2022-debug\RunKCF.exe D:\code\cpp\vs\myKCF\joaofaro\joao\configs\hog18_cn4.yaml
 ```
 
 可用配置：
@@ -99,18 +122,27 @@ cmake --preset vs2022-debug
 ```text
 configs/baseline_hog31.yaml
 configs/hog18.yaml
-```
-
-预留配置：
-
-```text
 configs/hog31_cn4.yaml
 configs/hog18_cn4.yaml
+configs/dut_video14_baseline_hog31.yaml
+configs/dut_video14_hog18.yaml
+configs/dut_video14_hog31_cn4.yaml
+configs/dut_video14_hog18_cn4.yaml
 ```
+
+输入源说明：
+
+- `input.type: video` 使用 `input.video_path` 读取视频，帧号从 0 开始，对应旧格式 `[fn, x, y, w, h]`。
+- `input.type: image_sequence` 使用 `input.image_dir`、`input.image_extension`、`input.image_start_index`、`input.image_index_digits` 读取如 `00001.jpg` 的图片序列。
+- 4 值标注格式 `x y w h` 按行号映射帧号，第一行对应第 1 帧；四个值均为 `-100` 时视为该帧无目标，不计入 CLE/IoU。
+- `RunKCF` 输出 `load_ms` 和 `avg_frame_load_ms`，但 `kcf_ms` 仍只统计 `tracker.update(frame)`。
+- `RunKCF` 每次运行都会把终端指标同步保存到 `run/output_data/<运行时间>.txt`；当 `output.save_video: 1` 时，视频统一保存到 `run/output_video/<运行时间>.mp4`。
+- 输出文件名基于运行开始时间，格式如 `20260607_2124`；同一分钟多次运行时追加 `_01`、`_02` 等后缀，避免覆盖已有结果。
 
 构建注意：
 
 - 不要在 Codex 中反复运行 `cmd /c call vcvars64.bat && cmake --build ...`，该命令在本项目中多次出现外层进程不返回。
+- 不要在 Codex 中直接运行 `cmake --build ...` 或 `ninja ...`；本项目在 Codex Windows shell 中多次出现外层进程不返回和 stale `.ninja_lock`。
 - 如果构建长时间无输出，先检查 `cmake/ninja/cl/link/cmd` 进程和 `out/build/vs2022-debug/.ninja_log`，不要盲等。
 - 如果确认没有构建进程但存在 stale `.ninja_lock`，再删除该 lock 文件。
 
@@ -124,5 +156,6 @@ configs/hog18_cn4.yaml
 - 不要随意删除 `source/`、`run/`、`docs/` 中已有文件。
 - 保持原始 `KCF` 入口兼容；后续实验主入口使用 `RunKCF`。
 - 新增实验变量必须通过配置控制，避免硬编码分散在多个函数里。
-- CN4 尚未实现，不能把 `hog31_cn4.yaml` 或 `hog18_cn4.yaml` 的结果描述为 CN 特征已生效。
+- CN4 已实现，但当前为固定近似 CN11 查表 + PCA4 投影；若论文需要严格 Color Names 口径，应替换为标准 `w2c` 表。
+- 当前不支持 CN-only，`features.cn.enabled: 1` 时必须同时启用 HOG。
 - 构建或测试卡住时，必须主动诊断进程、锁文件和日志，不能长时间等待同一条命令。

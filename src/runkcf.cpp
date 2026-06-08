@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cmath>
+#include <ctime>
+#include <cerrno>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -9,12 +11,16 @@
 #include <string>
 #include <vector>
 
+#include <direct.h>
+
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
 #include "app_config.hpp"
+#include "annotation_loader.hpp"
+#include "frame_source.hpp"
 #include "kcftracker.hpp"
 
 namespace {
@@ -22,72 +28,67 @@ namespace {
 const std::string DEFAULT_CONFIG_PATH =
     "D:\\code\\cpp\\vs\\myKCF\\joaofaro\\joao\\configs\\baseline_hog31.yaml";
 
-struct FrameAnnotation {
-    int frameNumber;
-    cv::Rect2f box;
+class TeeStreamBuffer : public std::streambuf {
+public:
+    TeeStreamBuffer(std::streambuf* first, std::streambuf* second)
+        : first_(first), second_(second)
+    {
+    }
+
+protected:
+    int overflow(int ch)
+    {
+        if (ch == traits_type::eof()) {
+            return traits_type::not_eof(ch);
+        }
+
+        const int firstResult = first_->sputc(static_cast<char>(ch));
+        const int secondResult = second_->sputc(static_cast<char>(ch));
+        if (firstResult == traits_type::eof() ||
+            secondResult == traits_type::eof()) {
+            return traits_type::eof();
+        }
+        return ch;
+    }
+
+    int sync()
+    {
+        const int firstResult = first_->pubsync();
+        const int secondResult = second_->pubsync();
+        return firstResult == 0 && secondResult == 0 ? 0 : -1;
+    }
+
+private:
+    std::streambuf* first_;
+    std::streambuf* second_;
 };
 
-bool parseAnnotationLine(const std::string& line, FrameAnnotation& annotation)
-{
-    std::string normalized = line;
-    for (size_t i = 0; i < normalized.size(); ++i) {
-        char& ch = normalized[i];
-        if (ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ',') {
-            ch = ' ';
-        }
+class ScopedOutputTee {
+public:
+    explicit ScopedOutputTee(std::ofstream& logFile)
+        : originalCout_(std::cout.rdbuf()),
+          originalCerr_(std::cerr.rdbuf()),
+          coutTee_(originalCout_, logFile.rdbuf()),
+          cerrTee_(originalCerr_, logFile.rdbuf())
+    {
+        std::cout.rdbuf(&coutTee_);
+        std::cerr.rdbuf(&cerrTee_);
     }
 
-    std::istringstream stream(normalized);
-    int frameNumber = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-    float width = 0.0f;
-    float height = 0.0f;
-    if (!(stream >> frameNumber >> x >> y >> width >> height)) {
-        return false;
+    ~ScopedOutputTee()
+    {
+        std::cout.flush();
+        std::cerr.flush();
+        std::cout.rdbuf(originalCout_);
+        std::cerr.rdbuf(originalCerr_);
     }
 
-    annotation.frameNumber = frameNumber;
-    annotation.box = cv::Rect2f(x, y, width, height);
-    return frameNumber >= 0 && width > 0.0f && height > 0.0f;
-}
-
-std::map<int, cv::Rect2f> loadGroundTruth(const std::string& path)
-{
-    std::map<int, cv::Rect2f> boxesByFrame;
-    std::ifstream file(path.c_str());
-    if (!file.is_open()) {
-        std::cerr << "Failed to open annotation file: " << path << std::endl;
-        return boxesByFrame;
-    }
-
-    std::string line;
-    int lineNumber = 0;
-    while (std::getline(file, line)) {
-        ++lineNumber;
-        if (line.find_first_not_of(" \t\r\n") == std::string::npos) {
-            continue;
-        }
-
-        FrameAnnotation annotation;
-        if (!parseAnnotationLine(line, annotation)) {
-            std::cerr << "Invalid annotation at line " << lineNumber
-                      << ": " << line << std::endl;
-            boxesByFrame.clear();
-            return boxesByFrame;
-        }
-        if (boxesByFrame.find(annotation.frameNumber) != boxesByFrame.end()) {
-            std::cerr << "Duplicate annotation for frame "
-                      << annotation.frameNumber << " at line "
-                      << lineNumber << std::endl;
-            boxesByFrame.clear();
-            return boxesByFrame;
-        }
-        boxesByFrame[annotation.frameNumber] = annotation.box;
-    }
-
-    return boxesByFrame;
-}
+private:
+    std::streambuf* originalCout_;
+    std::streambuf* originalCerr_;
+    TeeStreamBuffer coutTee_;
+    TeeStreamBuffer cerrTee_;
+};
 
 double centerLocationError(const cv::Rect2f& predicted, const cv::Rect2f& truth)
 {
@@ -144,12 +145,22 @@ cv::Rect rect2fToRect(const cv::Rect2f& box)
                     cvRound(box.width), cvRound(box.height));
 }
 
-void printFrameMetrics(int frameIndex, double kcfTimeMs, double cle, double iou)
+void printFrameMetrics(int frameIndex,
+                       double loadTimeMs,
+                       double kcfTimeMs,
+                       bool hasTruth,
+                       double cle,
+                       double iou)
 {
     std::cout << "frame=" << frameIndex
+              << ", load_ms=" << loadTimeMs
               << ", kcf_ms=" << kcfTimeMs
-              << ", CLE=" << cle
-              << ", IoU=" << iou << std::endl;
+              << ", target=" << (hasTruth ? "valid" : "missing");
+    if (hasTruth) {
+        std::cout << ", CLE=" << cle
+                  << ", IoU=" << iou;
+    }
+    std::cout << std::endl;
 }
 
 int effectiveFeatureChannels(const FeatureConfig& features)
@@ -164,6 +175,138 @@ int effectiveFeatureChannels(const FeatureConfig& features)
     return channels;
 }
 
+std::string normalizeSlashes(const std::string& path)
+{
+    std::string normalized = path;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    return normalized;
+}
+
+std::string dirname(const std::string& path)
+{
+    const std::string normalized = normalizeSlashes(path);
+    const size_t slash = normalized.find_last_of('/');
+    if (slash == std::string::npos) {
+        return ".";
+    }
+    if (slash == 0) {
+        return normalized.substr(0, 1);
+    }
+    return normalized.substr(0, slash);
+}
+
+std::string basename(const std::string& path)
+{
+    const std::string normalized = normalizeSlashes(path);
+    const size_t slash = normalized.find_last_of('/');
+    if (slash == std::string::npos) {
+        return normalized;
+    }
+    return normalized.substr(slash + 1);
+}
+
+std::string joinPath(const std::string& left, const std::string& right)
+{
+    if (left.empty()) {
+        return right;
+    }
+    const char last = left[left.size() - 1];
+    if (last == '/' || last == '\\') {
+        return left + right;
+    }
+    return left + "/" + right;
+}
+
+std::string projectRootFromConfigPath(const std::string& configPath)
+{
+    const std::string configDir = dirname(configPath);
+    if (basename(configDir) == "configs") {
+        return dirname(configDir);
+    }
+    return ".";
+}
+
+bool createDirectoryIfMissing(const std::string& path)
+{
+    if (path.empty()) {
+        return false;
+    }
+    if (_mkdir(path.c_str()) == 0) {
+        return true;
+    }
+    return errno == EEXIST;
+}
+
+bool ensureDirectory(const std::string& path)
+{
+    const std::string normalized = normalizeSlashes(path);
+    std::string current;
+    size_t start = 0;
+
+    if (normalized.size() >= 2 && normalized[1] == ':') {
+        current = normalized.substr(0, 2);
+        start = 2;
+        if (normalized.size() > 2 && normalized[2] == '/') {
+            current += "/";
+            start = 3;
+        }
+    }
+
+    while (start < normalized.size()) {
+        const size_t slash = normalized.find('/', start);
+        const std::string part = normalized.substr(
+            start, slash == std::string::npos ? std::string::npos : slash - start);
+        if (!part.empty()) {
+            current = current.empty() ? part : joinPath(current, part);
+            if (!createDirectoryIfMissing(current)) {
+                return false;
+            }
+        }
+        if (slash == std::string::npos) {
+            break;
+        }
+        start = slash + 1;
+    }
+    return true;
+}
+
+bool fileExists(const std::string& path)
+{
+    std::ifstream file(path.c_str());
+    return file.is_open();
+}
+
+std::string makeRunTimestamp()
+{
+    const std::time_t now = std::time(NULL);
+    std::tm localTime;
+    localtime_s(&localTime, &now);
+
+    std::ostringstream text;
+    text << std::put_time(&localTime, "%Y%m%d_%H%M");
+    return text.str();
+}
+
+std::string makeUniqueRunId(const std::string& outputDataDir,
+                            const std::string& outputVideoDir,
+                            const std::string& timestamp)
+{
+    for (int suffix = 0; suffix < 1000; ++suffix) {
+        std::ostringstream runId;
+        runId << timestamp;
+        if (suffix > 0) {
+            runId << "_" << std::setw(2) << std::setfill('0') << suffix;
+        }
+
+        const std::string id = runId.str();
+        if (!fileExists(joinPath(outputDataDir, id + ".txt")) &&
+            !fileExists(joinPath(outputVideoDir, id + ".mp4"))) {
+            return id;
+        }
+    }
+    return timestamp;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[])
@@ -174,6 +317,32 @@ int main(int argc, char* argv[])
     }
 
     const std::string configPath = argc == 2 ? argv[1] : DEFAULT_CONFIG_PATH;
+    const std::string runTimestamp = makeRunTimestamp();
+    const std::string projectRoot = projectRootFromConfigPath(configPath);
+    const std::string outputDataDir = joinPath(joinPath(projectRoot, "run"), "output_data");
+    const std::string outputVideoDir = joinPath(joinPath(projectRoot, "run"), "output_video");
+
+    if (!ensureDirectory(outputDataDir)) {
+        std::cerr << "Failed to create output data directory: "
+                  << outputDataDir << std::endl;
+        return 1;
+    }
+
+    const std::string runId = makeUniqueRunId(outputDataDir, outputVideoDir, runTimestamp);
+    const std::string outputTextPath = joinPath(outputDataDir, runId + ".txt");
+    const std::string outputVideoPath = joinPath(outputVideoDir, runId + ".mp4");
+
+    std::ofstream logFile(outputTextPath.c_str());
+    if (!logFile.is_open()) {
+        std::cerr << "Failed to open output text file: "
+                  << outputTextPath << std::endl;
+        return 1;
+    }
+
+    ScopedOutputTee outputTee(logFile);
+
+    std::cout << "output_text=" << outputTextPath << std::endl;
+
     AppConfig config;
     std::string configError;
     if (!loadAppConfig(configPath, config, configError)) {
@@ -181,12 +350,28 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    if (config.output.save_video) {
+        if (!ensureDirectory(outputVideoDir)) {
+            std::cerr << "Failed to create output video directory: "
+                      << outputVideoDir << std::endl;
+            return 1;
+        }
+        config.output.video_path = outputVideoPath;
+        std::cout << "output_video=" << outputVideoPath << std::endl;
+    }
+
     std::cout << "effective_feature_channels="
               << effectiveFeatureChannels(config.features)
               << std::endl;
 
-    const std::map<int, cv::Rect2f> groundTruth =
-        loadGroundTruth(config.input.annotation_path);
+    std::map<int, cv::Rect2f> groundTruth;
+    std::string annotationError;
+    if (!loadGroundTruthAnnotations(config.input.annotation_path,
+                                    groundTruth,
+                                    annotationError)) {
+        std::cerr << annotationError << std::endl;
+        return 1;
+    }
     if (groundTruth.empty()) {
         std::cerr << "No valid annotations loaded." << std::endl;
         return 1;
@@ -194,28 +379,45 @@ int main(int argc, char* argv[])
     const std::map<int, cv::Rect2f>::const_iterator firstTruth = groundTruth.begin();
     const int firstFrameNumber = firstTruth->first;
 
-    cv::VideoCapture capture(config.input.video_path);
-    if (!capture.isOpened()) {
-        std::cerr << "Failed to open video: " << config.input.video_path << std::endl;
+    std::string frameSourceError;
+    std::unique_ptr<FrameSource> frameSource =
+        createFrameSource(config.input, frameSourceError);
+    if (!frameSource) {
+        std::cerr << frameSourceError << std::endl;
         return 1;
     }
 
-    cv::Mat frame;
-    if (!capture.read(frame) || frame.empty()) {
-        std::cerr << "Failed to read the first frame." << std::endl;
+    int loadedFrames = 0;
+    double totalFrameLoadTimeMs = 0.0;
+    FrameData frameData;
+    bool foundInitialFrame = false;
+    while (frameSource->readNext(frameData, frameSourceError)) {
+        ++loadedFrames;
+        totalFrameLoadTimeMs += frameData.load_time_ms;
+        if (frameData.frame_number < firstFrameNumber) {
+            continue;
+        }
+        if (frameData.frame_number == firstFrameNumber) {
+            foundInitialFrame = true;
+        }
+        break;
+    }
+    if (!frameSourceError.empty()) {
+        std::cerr << frameSourceError << std::endl;
         return 1;
     }
+    if (!foundInitialFrame || frameData.image.empty()) {
+        std::cerr << "Failed to read initial frame " << firstFrameNumber << "." << std::endl;
+        return 1;
+    }
+
+    cv::Mat frame = frameData.image;
 
     cv::VideoWriter writer;
     if (config.output.save_video) {
-        double inputFps = capture.get(cv::CAP_PROP_FPS);
-        if (inputFps <= 0.0) {
-            inputFps = 30.0;
-        }
-
         writer.open(config.output.video_path,
                     cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
-                    inputFps,
+                    frameSource->fps(),
                     frame.size());
         if (!writer.isOpened()) {
             std::cerr << "Failed to open output video: " << config.output.video_path
@@ -253,7 +455,7 @@ int main(int argc, char* argv[])
     if (cle < 2.0) {
         ++cleBelowTwoFrames;
     }
-    printFrameMetrics(firstFrameNumber, 0.0, cle, iou);
+    printFrameMetrics(firstFrameNumber, frameData.load_time_ms, 0.0, true, cle, iou);
 
     if (config.output.save_video) {
         const cv::Rect predictedDrawBox = clampRectToFrame(predictedBox, frame.size());
@@ -267,21 +469,16 @@ int main(int argc, char* argv[])
         writer.write(frame);
     }
 
-    int frameOffset = 0;
-    while (capture.read(frame)) {
-        ++frameOffset;
-        if (frame.empty()) {
-            break;
-        }
+    int processedFrames = 1;
+    while (frameSource->readNext(frameData, frameSourceError)) {
+        ++loadedFrames;
+        totalFrameLoadTimeMs += frameData.load_time_ms;
+        ++processedFrames;
 
-        const int frameIndex = firstFrameNumber + frameOffset;
+        frame = frameData.image;
+        const int frameIndex = frameData.frame_number;
         const std::map<int, cv::Rect2f>::const_iterator truthIt =
             groundTruth.find(frameIndex);
-        if (truthIt == groundTruth.end()) {
-            std::cerr << "No annotation for frame " << frameIndex
-                      << ". Stopping evaluation." << std::endl;
-            break;
-        }
 
         cv::TickMeter timer;
         timer.start();
@@ -297,40 +494,54 @@ int main(int argc, char* argv[])
         }
 
         const double kcfTimeMs = timer.getTimeMilli();
+        ++updateFrames;
+        totalKcfTimeMs += kcfTimeMs;
+
         predictedBox = cv::Rect2f(static_cast<float>(result.x),
                                   static_cast<float>(result.y),
                                   static_cast<float>(result.width),
                                   static_cast<float>(result.height));
-        const cv::Rect2f truthBox = truthIt->second;
-        cle = centerLocationError(predictedBox, truthBox);
-        iou = intersectionOverUnion(predictedBox, truthBox);
 
-        ++evaluatedFrames;
-        ++updateFrames;
-        totalKcfTimeMs += kcfTimeMs;
-        totalCle += cle;
-        totalIou += iou;
-        if (cle < 2.0) {
-            ++cleBelowTwoFrames;
+        bool hasTruth = truthIt != groundTruth.end();
+        cv::Rect2f truthBox;
+        if (hasTruth) {
+            truthBox = truthIt->second;
+            cle = centerLocationError(predictedBox, truthBox);
+            iou = intersectionOverUnion(predictedBox, truthBox);
+
+            ++evaluatedFrames;
+            totalCle += cle;
+            totalIou += iou;
+            if (cle < 2.0) {
+                ++cleBelowTwoFrames;
+            }
         }
 
-        printFrameMetrics(frameIndex, kcfTimeMs, cle, iou);
+        printFrameMetrics(frameIndex, frameData.load_time_ms, kcfTimeMs, hasTruth, cle, iou);
 
         if (config.output.save_video) {
             const cv::Rect predictedDrawBox = clampRectToFrame(predictedBox, frame.size());
-            const cv::Rect truthDrawBox = clampRectToFrame(truthBox, frame.size());
             if (predictedDrawBox.area() > 0) {
                 cv::rectangle(frame, predictedDrawBox, cv::Scalar(0, 255, 0), 2);
             }
-            if (truthDrawBox.area() > 0) {
-                cv::rectangle(frame, truthDrawBox, cv::Scalar(0, 0, 255), 2);
+            if (hasTruth) {
+                const cv::Rect truthDrawBox = clampRectToFrame(truthBox, frame.size());
+                if (truthDrawBox.area() > 0) {
+                    cv::rectangle(frame, truthDrawBox, cv::Scalar(0, 0, 255), 2);
+                }
             }
             writer.write(frame);
         }
     }
+    if (!frameSourceError.empty()) {
+        std::cerr << frameSourceError << std::endl;
+        return 1;
+    }
 
     const double averageKcfTimeMs =
         updateFrames > 0 ? totalKcfTimeMs / static_cast<double>(updateFrames) : 0.0;
+    const double averageFrameLoadTimeMs =
+        loadedFrames > 0 ? totalFrameLoadTimeMs / static_cast<double>(loadedFrames) : 0.0;
     const double averageKcfFps =
         averageKcfTimeMs > 0.0 ? 1000.0 / averageKcfTimeMs : 0.0;
     const double averageCle =
@@ -359,8 +570,11 @@ int main(int argc, char* argv[])
     std::cout << "lab_enabled="
               << (config.features.lab_enabled ? "true" : "false") << std::endl;
     std::cout << "fusion_mode=" << config.features.fusion_mode << std::endl;
+    std::cout << "processed_frames=" << processedFrames << std::endl;
+    std::cout << "loaded_frames=" << loadedFrames << std::endl;
     std::cout << "evaluated_frames=" << evaluatedFrames << std::endl;
     std::cout << "update_frames=" << updateFrames << std::endl;
+    std::cout << "avg_frame_load_ms=" << averageFrameLoadTimeMs << std::endl;
     std::cout << "avg_kcf_ms=" << averageKcfTimeMs << std::endl;
     std::cout << "avg_kcf_fps=" << averageKcfFps << std::endl;
     std::cout << "avg_CLE=" << averageCle << std::endl;

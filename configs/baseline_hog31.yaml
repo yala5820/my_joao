@@ -1,4 +1,3 @@
----
 experiment:
   name: baseline_hog31
   description: Baseline KCF with 31-channel FHOG

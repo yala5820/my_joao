@@ -32,7 +32,9 @@ target_link_libraries(KCF ${OpenCV_LIBS})
 
 add_executable(RunKCF
     src/runkcf.cpp
+    src/annotation_loader.cpp
     src/app_config.cpp
+    src/frame_source.cpp
     ${KCF_CORE_SOURCES}
 )
 target_link_libraries(RunKCF ${OpenCV_LIBS})
@@ -49,6 +51,14 @@ add_executable(CnFeatureTests
     src/cn_feature.cpp
 )
 target_link_libraries(CnFeatureTests ${OpenCV_LIBS})
+
+add_executable(DatasetIOTests
+    tests/dataset_io_tests.cpp
+    src/annotation_loader.cpp
+    src/app_config.cpp
+    src/frame_source.cpp
+)
+target_link_libraries(DatasetIOTests ${OpenCV_LIBS})
 
 # Copy OpenCV DLL to output directory so the executable runs from VS
 if(WIN32 AND MSVC)
@@ -71,6 +81,11 @@ if(WIN32 AND MSVC)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
             "$<TARGET_FILE_DIR:CnFeatureTests>"
+    )
+    add_custom_command(TARGET DatasetIOTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OpenCV_DIR}/bin/$<CONFIG>/opencv_world4100$<$<CONFIG:Debug>:d>.dll"
+            "$<TARGET_FILE_DIR:DatasetIOTests>"
     )
 endif()
 

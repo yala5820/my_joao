@@ -8,7 +8,12 @@ struct ExperimentConfig {
 };
 
 struct InputConfig {
+    std::string type;
     std::string video_path;
+    std::string image_dir;
+    std::string image_extension;
+    int image_start_index;
+    int image_index_digits;
     std::string annotation_path;
 };
 
@@ -41,4 +46,3 @@ struct AppConfig {
 
 bool loadAppConfig(const std::string& path, AppConfig& config, std::string& error);
 void printAppConfig(const std::string& path, const AppConfig& config);
-

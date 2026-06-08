@@ -1,4 +1,3 @@
----
 experiment:
   name: hog18_cn4
   description: KCF with requested 18-channel HOG and 4-channel CN configuration

@@ -1,4 +1,3 @@
----
 experiment:
   name: hog18
   description: KCF with requested 18-channel HOG configuration
