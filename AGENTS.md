@@ -21,7 +21,7 @@
 - `hog31_cn4.yaml` 与 `hog18_cn4.yaml` 已能成功运行并输出 Summary。
 - 当前 CN4 使用固定、可复现的 CN11 近似查表和 PCA4 投影，不是原始 `w2c.mat` 数值表。
 - `RunKCF` 已支持两类输入源：视频文件和图片序列文件夹。
-- Phase 3 置信度机制已接入 `hog18_conf.yaml` 与 `hog18_cn4_conf.yaml`，使用 `peak / PSR / APCE / EMA` 控制位置、scale、模板更新和学习率。
+- Phase 3.1 置信度机制已接入 `hog18_conf.yaml` 与 `hog18_cn4_conf.yaml`，使用 `peak / PSR / APCE / EMA` 进行 `high / medium / soft_low / hard_low` 四等级分级，并分离 position、scale、template 提交规则。
 
 技术栈：
 
@@ -153,7 +153,7 @@ configs/dut_hog18_cn4_conf.yaml
 - `RunKCF` 输出 `load_ms` 和 `avg_frame_load_ms`，但 `kcf_ms` 仍只统计 `tracker.update(frame)`。
 - `RunKCF` 每次运行都会把终端指标同步保存到 `run/output_data/<运行时间>.txt`；当 `output.save_video: 1` 时，视频统一保存到 `run/output_video/<运行时间>.mp4`。
 - 输出文件名基于运行开始时间，格式如 `20260607_2124`；同一分钟多次运行时追加 `_01`、`_02` 等后缀，避免覆盖已有结果。
-- 开启 `confidence.enabled: 1` 后，逐帧输出会追加 `peak`、`PSR`、`APCE`、`psr_ema`、`apce_ema`、`confidence`、`displacement_ratio`、`lr`、`action`、`template_updated`、`scale_updated`、`ema_updated`。
+- 开启 `confidence.enabled: 1` 后，逐帧输出会追加 `peak`、`PSR`、`APCE`、`psr_ema`、`apce_ema`、`confidence`、`displacement_ratio`、`lr`、`action`、`template_updated`、`scale_updated`、`ema_updated`；`confidence` 可为 `warmup/high/medium/soft_low/hard_low`。
 - Phase 3 只继续改进 `hog18` 与 `hog18_cn4` 两条实验线，不继续新增 `hog31` 置信度配置。
 
 构建注意：

@@ -1,5 +1,6 @@
 #include <cmath>
 #include <iostream>
+#include <string>
 
 #include "confidence.hpp"
 
@@ -55,7 +56,7 @@ bool testWarmupInitializesEma()
            almostEqual(d2.apce_ema, 24.0f, 1.0e-5f);
 }
 
-bool testHighMediumLowEmaRules()
+bool testHighMediumSoftLowHardLowEmaRules()
 {
     ConfidenceConfig config;
     config.enabled = true;
@@ -64,20 +65,51 @@ bool testHighMediumLowEmaRules()
     config.medium_ema_alpha = 0.0f;
     config.high_ratio = 0.95f;
     config.low_ratio = 0.60f;
+    config.hard_low_ratio = 0.35f;
 
     ConfidenceEstimator estimator(config);
     estimator.evaluate({1.0f, 10.0f, 20.0f});
 
     ConfidenceDiagnostics high = estimator.evaluate({1.0f, 11.0f, 22.0f});
     ConfidenceDiagnostics medium = estimator.evaluate({1.0f, 8.0f, 16.0f});
-    ConfidenceDiagnostics low = estimator.evaluate({1.0f, 3.0f, 6.0f});
+    ConfidenceDiagnostics softLow = estimator.evaluate({1.0f, 5.0f, 12.0f});
+    ConfidenceDiagnostics hardLow = estimator.evaluate({1.0f, 2.0f, 4.0f});
 
     return high.confidence_level == ConfidenceLevel::High &&
            high.ema_updated &&
            medium.confidence_level == ConfidenceLevel::Medium &&
            !medium.ema_updated &&
-           low.confidence_level == ConfidenceLevel::Low &&
-           !low.ema_updated;
+           softLow.confidence_level == ConfidenceLevel::SoftLow &&
+           !softLow.ema_updated &&
+           hardLow.confidence_level == ConfidenceLevel::HardLow &&
+           !hardLow.ema_updated;
+}
+
+bool testSoftLowCanUpdateEmaWithLowAlpha()
+{
+    ConfidenceConfig config;
+    config.enabled = true;
+    config.warmup_frames = 1;
+    config.high_ratio = 0.95f;
+    config.low_ratio = 0.60f;
+    config.hard_low_ratio = 0.35f;
+    config.low_ema_alpha = 0.1f;
+
+    ConfidenceEstimator estimator(config);
+    estimator.evaluate({1.0f, 10.0f, 20.0f});
+
+    ConfidenceDiagnostics softLow = estimator.evaluate({1.0f, 5.0f, 12.0f});
+
+    return softLow.confidence_level == ConfidenceLevel::SoftLow &&
+           softLow.ema_updated &&
+           almostEqual(softLow.psr_ema, 9.5f, 1.0e-5f) &&
+           almostEqual(softLow.apce_ema, 19.2f, 1.0e-5f);
+}
+
+bool testConfidenceLevelNames()
+{
+    return std::string(confidenceLevelName(ConfidenceLevel::SoftLow)) == "soft_low" &&
+           std::string(confidenceLevelName(ConfidenceLevel::HardLow)) == "hard_low";
 }
 
 }  // namespace
@@ -87,7 +119,9 @@ int main()
     if (!testSinglePeakHasHigherConfidenceThanFlatResponse() ||
         !testExclusionRadiusAffectsPsr() ||
         !testWarmupInitializesEma() ||
-        !testHighMediumLowEmaRules()) {
+        !testHighMediumSoftLowHardLowEmaRules() ||
+        !testSoftLowCanUpdateEmaWithLowAlpha() ||
+        !testConfidenceLevelNames()) {
         return 1;
     }
 

@@ -43,11 +43,15 @@ struct ConfidenceConfig {
     int warmup_frames = 5;
     float ema_alpha = 0.05f;
     float medium_ema_alpha = 0.0f;
+    float low_ema_alpha = 0.0f;
     float high_ratio = 0.95f;
     float low_ratio = 0.60f;
+    float hard_low_ratio = 0.35f;
     float medium_lr_factor = 0.30f;
-    float low_displacement_threshold = 0.50f;
-    float low_displacement_damping = 0.50f;
+    float soft_low_position_damping = 1.00f;
+    float medium_scale_smoothing = 0.50f;
+    float hard_low_displacement_threshold = 0.50f;
+    float hard_low_position_damping = 0.50f;
 };
 
 struct AppConfig {

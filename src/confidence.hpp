@@ -11,7 +11,8 @@ enum class ConfidenceLevel {
     Warmup,
     High,
     Medium,
-    Low
+    SoftLow,
+    HardLow
 };
 
 enum class PositionAction {

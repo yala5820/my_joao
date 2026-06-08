@@ -69,13 +69,19 @@ ConfidenceDiagnostics ConfidenceEstimator::evaluate(const ResponseStats& stats)
     const bool low =
         stats.psr < config_.low_ratio * psr_ema_ ||
         stats.apce < config_.low_ratio * apce_ema_;
+    const bool hardLow =
+        stats.psr < config_.hard_low_ratio * psr_ema_ ||
+        stats.apce < config_.hard_low_ratio * apce_ema_;
 
     float alpha = 0.0f;
     if (high) {
         diagnostics.confidence_level = ConfidenceLevel::High;
         alpha = config_.ema_alpha;
+    } else if (hardLow) {
+        diagnostics.confidence_level = ConfidenceLevel::HardLow;
     } else if (low) {
-        diagnostics.confidence_level = ConfidenceLevel::Low;
+        diagnostics.confidence_level = ConfidenceLevel::SoftLow;
+        alpha = config_.low_ema_alpha;
     } else {
         diagnostics.confidence_level = ConfidenceLevel::Medium;
         alpha = config_.medium_ema_alpha;
@@ -168,8 +174,10 @@ const char* confidenceLevelName(ConfidenceLevel level)
         return "high";
     case ConfidenceLevel::Medium:
         return "medium";
-    case ConfidenceLevel::Low:
-        return "low";
+    case ConfidenceLevel::SoftLow:
+        return "soft_low";
+    case ConfidenceLevel::HardLow:
+        return "hard_low";
     }
     return "unknown";
 }

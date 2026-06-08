@@ -1,5 +1,7 @@
 # Phase 3：置信度机制与模板更新控制总结
 
+> 2026-06-08 更新：Phase 3.1 已将初版 `high / medium / low` 三等级机制升级为 `high / medium / soft_low / hard_low` 四等级机制，并分离 position、scale、template 三类提交规则。本文末尾“Phase 3.1 最新修订”记录当前最新机制，后续实验以该章节为准。
+
 ## 1. 阶段目标
 
 Phase 3 的目标是在现有 KCF 跟踪流程中引入“置信度机制和模板更新控制”，使算法不再对每一帧都使用固定学习率更新模板，而是根据检测响应质量判断当前跟踪结果的可信程度，并据此控制：
@@ -28,11 +30,15 @@ confidence:
   warmup_frames: 5
   ema_alpha: 0.05
   medium_ema_alpha: 0.0
+  low_ema_alpha: 0.0
   high_ratio: 0.95
   low_ratio: 0.60
+  hard_low_ratio: 0.35
   medium_lr_factor: 0.30
-  low_displacement_threshold: 0.50
-  low_displacement_damping: 0.50
+  soft_low_position_damping: 1.00
+  medium_scale_smoothing: 0.50
+  hard_low_displacement_threshold: 0.50
+  hard_low_position_damping: 0.50
 ```
 
 旧配置文件如果没有 `confidence` 段，则默认：
@@ -64,8 +70,8 @@ confidence:
 
 - `ResponseStats`：保存 `peak`、`psr`、`apce`。
 - `ConfidenceDiagnostics`：保存逐帧诊断字段。
-- `ConfidenceEstimator`：维护 warmup、EMA 和 high/medium/low 分级逻辑。
-- `ConfidenceLevel`：表示 `disabled`、`warmup`、`high`、`medium`、`low`。
+- `ConfidenceEstimator`：维护 warmup、EMA 和 high/medium/soft_low/hard_low 分级逻辑。
+- `ConfidenceLevel`：表示 `disabled`、`warmup`、`high`、`medium`、`soft_low`、`hard_low`。
 - `PositionAction`：表示 `disabled`、`accept`、`damped`、`reject`。
 
 ### 2.3 改造 KCFTracker 检测阶段
@@ -155,7 +161,8 @@ Phase 3 改造后，流程变为：
 - warmup 后可以正确初始化 EMA。
 - high 会更新 EMA。
 - medium 默认不更新 EMA。
-- low 不更新 EMA。
+- soft_low 默认不更新 EMA，但可以通过 `low_ema_alpha` 设置为小权重更新。
+- hard_low 不更新 EMA。
 
 同时扩展 `DatasetIOTests`：
 
@@ -363,11 +370,21 @@ medium_ema_alpha: 0.02
 
 则 medium 帧也会以较小权重更新 EMA。
 
-#### low 不更新 EMA
+#### soft_low / hard_low 的 EMA 更新
 
-low 帧不更新 EMA。
+soft_low 帧默认不更新 EMA：
 
-这样设计的初衷是避免错误检测结果污染历史置信度基准。但在复杂背景中，如果目标长期处于低响应状态，EMA 可能会停留在早期较高值，导致后续帧长期被判定为 low。
+```yaml
+low_ema_alpha: 0.0
+```
+
+如果目标长期处于低响应但仍能稳定跟踪的状态，可以将 `low_ema_alpha` 设置为很小的值，让 soft_low 帧缓慢更新 EMA，缓解 EMA 长期停留在早期高值的问题，例如：
+
+```yaml
+low_ema_alpha: 0.01
+```
+
+hard_low 帧仍然不更新 EMA，因为 hard_low 被视为严重异常响应，允许它更新 EMA 容易污染历史置信度基准。
 
 ## 4. 模板更新控制逻辑
 
@@ -561,4 +578,177 @@ ema_updated=false
 
 该策略的设计意图是：如果响应质量低且位置突然大幅跳动，很可能是跟到了背景干扰，因此拒绝该跳变。
 
+## 5. Phase 3.1 最新修订：soft_low / hard_low 与分离提交规则
 
+Phase 3.1 根据复杂背景测试暴露的问题，进一步修改置信度机制。核心变化是：
+
+- 将 `low` 拆成 `soft_low` 和 `hard_low`。
+- `low_ratio` 不再表示唯一 low 阈值，而是表示进入 `soft_low` 的阈值。
+- 新增 `hard_low_ratio`，表示进入 `hard_low` 的更低阈值。
+- position、scale、template 不再由一个 confidence 分支简单统一控制，而是分开提交。
+
+### 5.1 四等级分级
+
+当前最新分级规则为：
+
+```text
+high:
+  PSR >= high_ratio * psr_ema
+  且 APCE >= high_ratio * apce_ema
+
+hard_low:
+  PSR < hard_low_ratio * psr_ema
+  或 APCE < hard_low_ratio * apce_ema
+
+soft_low:
+  PSR < low_ratio * psr_ema
+  或 APCE < low_ratio * apce_ema
+
+medium:
+  其他情况
+```
+
+判定顺序是 `high -> hard_low -> soft_low -> medium`。这样可以把“响应质量有下降但仍可跟随”的帧归入 `soft_low`，只把响应严重异常的帧归入 `hard_low`。
+
+### 5.2 最新 YAML 参数
+
+```yaml
+confidence:
+  enabled: 1
+  psr_exclusion_radius: 5
+  eps: 0.000001
+  warmup_frames: 5
+  ema_alpha: 0.05
+  medium_ema_alpha: 0.0
+  low_ema_alpha: 0.0
+  high_ratio: 0.95
+  low_ratio: 0.60
+  hard_low_ratio: 0.35
+  medium_lr_factor: 0.30
+  soft_low_position_damping: 1.00
+  medium_scale_smoothing: 0.50
+  hard_low_displacement_threshold: 0.50
+  hard_low_position_damping: 0.50
+```
+
+旧字段 `low_displacement_threshold` 和 `low_displacement_damping` 仍可读取，分别映射为 `hard_low_displacement_threshold` 和 `hard_low_position_damping`，用于兼容旧配置。
+
+### 5.2.1 配置项逐项说明
+
+`enabled`：是否启用置信度机制。`0` 表示关闭，程序退回原始 KCF 更新逻辑；`1` 表示启用 `warmup/high/medium/soft_low/hard_low` 分级和提交控制。
+
+`psr_exclusion_radius`：计算 PSR 时排除峰值附近的 response cell 半径。排除区域越大，越能避免峰值附近响应污染 sidelobe 统计；但 response map 较小时，过大的排除半径会使 sidelobe 样本变少。当前常用 `4` 或 `5`。
+
+`eps`：PSR 和 APCE 计算中的除零保护项。一般保持 `0.000001`，不建议作为主要调参项。
+
+`warmup_frames`：EMA 初始化使用的检测帧数量。warmup 阶段会统计 PSR/APCE 均值并初始化 `psr_ema` 和 `apce_ema`。值越大，初始化越平滑；值过小容易被起始几帧的异常高响应拉高基准。
+
+`ema_alpha`：`high` 帧更新 EMA 的学习率。值越大，EMA 越快跟随当前响应质量；值越小，历史基准越稳定。典型范围 `0.03` 到 `0.10`。
+
+`medium_ema_alpha`：`medium` 帧更新 EMA 的学习率。默认 `0.0`，表示 medium 不更新 EMA；如果目标外观或背景缓慢变化，可以设为小值，例如 `0.01` 或 `0.02`。
+
+`low_ema_alpha`：`soft_low` 帧更新 EMA 的学习率。默认 `0.0`，表示 soft_low 不更新 EMA；如果测试中出现 EMA 长期停留在早期高值、导致大量帧持续 soft_low，可以设为很小的值，例如 `0.005`、`0.01` 或 `0.02`。该参数只作用于 `soft_low`，不作用于 `hard_low`，因为 hard_low 被认为是严重异常响应。
+
+`high_ratio`：高置信度阈值比例。当前帧需要同时满足 `PSR >= high_ratio * psr_ema` 和 `APCE >= high_ratio * apce_ema` 才会判为 `high`。值越高，high 越严格。
+
+`low_ratio`：`soft_low` 阈值比例。当前帧只要满足 `PSR < low_ratio * psr_ema` 或 `APCE < low_ratio * apce_ema`，且未触发 hard_low，就会判为 `soft_low`。值越高，越容易进入 soft_low。
+
+`hard_low_ratio`：`hard_low` 阈值比例。当前帧只要满足 `PSR < hard_low_ratio * psr_ema` 或 `APCE < hard_low_ratio * apce_ema`，就会判为 `hard_low`。必须满足 `hard_low_ratio <= low_ratio`。值越低，hard_low 越少出现；值越高，强拒绝策略越容易触发。
+
+`medium_lr_factor`：`medium` 帧模板更新学习率系数。实际模板学习率为 `medium_lr_factor * interp_factor`。值越大，medium 帧越接近原始 KCF 的模板更新；值越小，越保守。
+
+`soft_low_position_damping`：`soft_low` 帧的位置提交阻尼系数。默认 `1.0`，表示完整接受 candidate 位置；如果设为 `0.5`，则只接受一半检测位移。该参数只影响位置，不更新 scale 和模板。
+
+`medium_scale_smoothing`：`medium` 帧接受 candidate scale 的平滑系数。`1.0` 表示完整接受 candidate scale，`0.0` 表示保持 previous scale，`0.5` 表示取二者中间值。
+
+`hard_low_displacement_threshold`：`hard_low` 帧判断位置跳变是否过大的阈值，定义在 `displacement_ratio = candidate_center_shift / previous_roi_diagonal` 上。小于等于该阈值时执行阻尼更新，大于该阈值时拒绝位置跳变。
+
+`hard_low_position_damping`：`hard_low` 小位移场景的位置阻尼系数。默认 `0.5`，表示只接受一半检测位移。该参数只在 `hard_low` 且 `displacement_ratio <= hard_low_displacement_threshold` 时生效。
+
+### 5.3 position 提交规则
+
+```text
+high:
+  接受 candidate_roi
+
+medium:
+  接受 candidate_roi
+
+soft_low:
+  使用 soft_low_position_damping 提交位置
+  默认 1.0，即完整接受 candidate_roi 的中心位置
+  但不接受 candidate_scale 带来的框尺寸变化
+
+hard_low:
+  如果 displacement_ratio <= hard_low_displacement_threshold:
+    使用 hard_low_position_damping 阻尼更新位置
+  否则:
+    拒绝位置跳变，恢复 previous_roi
+```
+
+### 5.4 scale 提交规则
+
+```text
+high:
+  直接接受 candidate_scale
+
+medium:
+  使用 medium_scale_smoothing 平滑接受 candidate_scale
+
+soft_low:
+  保持 previous_scale
+
+hard_low:
+  恢复 previous_scale
+```
+
+medium 的平滑公式为：
+
+```text
+scale = previous_scale * (1 - medium_scale_smoothing)
+      + candidate_scale * medium_scale_smoothing
+```
+
+### 5.5 template 提交规则
+
+```text
+high:
+  lr = interp_factor
+  更新模板
+
+medium:
+  lr = medium_lr_factor * interp_factor
+  更新模板
+
+soft_low:
+  lr = 0
+  不更新模板
+
+hard_low:
+  lr = 0
+  不更新模板
+```
+
+### 5.6 EMA 更新规则
+
+```text
+high:
+  使用 ema_alpha 更新 EMA
+
+medium:
+  使用 medium_ema_alpha 更新 EMA
+  默认 medium_ema_alpha = 0，不更新
+
+soft_low:
+  使用 low_ema_alpha 更新 EMA
+  默认 low_ema_alpha = 0，不更新
+
+hard_low:
+  不更新 EMA
+```
+
+### 5.7 设计目的
+
+Phase 3 初版中，`low` 会同时触发位置阻尼、scale 冻结、模板冻结和 EMA 冻结。在复杂背景中，如果 PSR/APCE 因响应图不够尖锐而下降，即使目标位置仍然较好，也会过早进入强控制，导致模板长期不更新并最终丢失。
+
+Phase 3.1 的 `soft_low` 用于缓解这个问题：响应质量下降时，仍允许位置跟随目标，避免目标框因阻尼过强而持续滞后；同时不更新模板和 scale，降低错误外观污染风险。`hard_low` 则保留强控制逻辑，只用于响应严重异常或大幅跳变场景。

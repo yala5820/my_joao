@@ -390,12 +390,15 @@ bool validateAppConfig(const AppConfig& config, std::string& error)
     if (config.confidence.ema_alpha < 0.0f ||
         config.confidence.ema_alpha > 1.0f ||
         config.confidence.medium_ema_alpha < 0.0f ||
-        config.confidence.medium_ema_alpha > 1.0f) {
+        config.confidence.medium_ema_alpha > 1.0f ||
+        config.confidence.low_ema_alpha < 0.0f ||
+        config.confidence.low_ema_alpha > 1.0f) {
         error = "confidence EMA alpha values must be in [0, 1].";
         return false;
     }
     if (config.confidence.high_ratio <= 0.0f ||
-        config.confidence.low_ratio <= 0.0f) {
+        config.confidence.low_ratio <= 0.0f ||
+        config.confidence.hard_low_ratio <= 0.0f) {
         error = "confidence ratio values must be positive.";
         return false;
     }
@@ -403,18 +406,32 @@ bool validateAppConfig(const AppConfig& config, std::string& error)
         error = "confidence.low_ratio must be <= confidence.high_ratio.";
         return false;
     }
+    if (config.confidence.hard_low_ratio > config.confidence.low_ratio) {
+        error = "confidence.hard_low_ratio must be <= confidence.low_ratio.";
+        return false;
+    }
     if (config.confidence.medium_lr_factor < 0.0f ||
         config.confidence.medium_lr_factor > 1.0f) {
         error = "confidence.medium_lr_factor must be in [0, 1].";
         return false;
     }
-    if (config.confidence.low_displacement_threshold < 0.0f) {
-        error = "confidence.low_displacement_threshold must be non-negative.";
+    if (config.confidence.soft_low_position_damping < 0.0f ||
+        config.confidence.soft_low_position_damping > 1.0f) {
+        error = "confidence.soft_low_position_damping must be in [0, 1].";
         return false;
     }
-    if (config.confidence.low_displacement_damping < 0.0f ||
-        config.confidence.low_displacement_damping > 1.0f) {
-        error = "confidence.low_displacement_damping must be in [0, 1].";
+    if (config.confidence.medium_scale_smoothing < 0.0f ||
+        config.confidence.medium_scale_smoothing > 1.0f) {
+        error = "confidence.medium_scale_smoothing must be in [0, 1].";
+        return false;
+    }
+    if (config.confidence.hard_low_displacement_threshold < 0.0f) {
+        error = "confidence.hard_low_displacement_threshold must be non-negative.";
+        return false;
+    }
+    if (config.confidence.hard_low_position_damping < 0.0f ||
+        config.confidence.hard_low_position_damping > 1.0f) {
+        error = "confidence.hard_low_position_damping must be in [0, 1].";
         return false;
     }
     return true;
@@ -456,17 +473,36 @@ bool loadAppConfig(const std::string& path, AppConfig& config, std::string& erro
         return false;
     }
 
+    float legacyLowDisplacementThreshold = 0.50f;
+    float legacyLowDisplacementDamping = 0.50f;
+    if (!readOptionalFloat(values,
+                           "confidence.low_displacement_threshold",
+                           0.50f,
+                           legacyLowDisplacementThreshold,
+                           error) ||
+        !readOptionalFloat(values,
+                           "confidence.low_displacement_damping",
+                           0.50f,
+                           legacyLowDisplacementDamping,
+                           error)) {
+        return false;
+    }
+
     if (!readOptionalBool(values, "confidence.enabled", false, config.confidence.enabled, error) ||
         !readOptionalInt(values, "confidence.psr_exclusion_radius", 5, config.confidence.psr_exclusion_radius, error) ||
         !readOptionalFloat(values, "confidence.eps", 0.000001f, config.confidence.eps, error) ||
         !readOptionalInt(values, "confidence.warmup_frames", 5, config.confidence.warmup_frames, error) ||
         !readOptionalFloat(values, "confidence.ema_alpha", 0.05f, config.confidence.ema_alpha, error) ||
         !readOptionalFloat(values, "confidence.medium_ema_alpha", 0.0f, config.confidence.medium_ema_alpha, error) ||
+        !readOptionalFloat(values, "confidence.low_ema_alpha", 0.0f, config.confidence.low_ema_alpha, error) ||
         !readOptionalFloat(values, "confidence.high_ratio", 0.95f, config.confidence.high_ratio, error) ||
         !readOptionalFloat(values, "confidence.low_ratio", 0.60f, config.confidence.low_ratio, error) ||
+        !readOptionalFloat(values, "confidence.hard_low_ratio", 0.35f, config.confidence.hard_low_ratio, error) ||
         !readOptionalFloat(values, "confidence.medium_lr_factor", 0.30f, config.confidence.medium_lr_factor, error) ||
-        !readOptionalFloat(values, "confidence.low_displacement_threshold", 0.50f, config.confidence.low_displacement_threshold, error) ||
-        !readOptionalFloat(values, "confidence.low_displacement_damping", 0.50f, config.confidence.low_displacement_damping, error)) {
+        !readOptionalFloat(values, "confidence.soft_low_position_damping", 1.00f, config.confidence.soft_low_position_damping, error) ||
+        !readOptionalFloat(values, "confidence.medium_scale_smoothing", 0.50f, config.confidence.medium_scale_smoothing, error) ||
+        !readOptionalFloat(values, "confidence.hard_low_displacement_threshold", legacyLowDisplacementThreshold, config.confidence.hard_low_displacement_threshold, error) ||
+        !readOptionalFloat(values, "confidence.hard_low_position_damping", legacyLowDisplacementDamping, config.confidence.hard_low_position_damping, error)) {
         return false;
     }
 
@@ -501,9 +537,13 @@ void printAppConfig(const std::string& path, const AppConfig& config)
     std::cout << "confidence.warmup_frames=" << config.confidence.warmup_frames << std::endl;
     std::cout << "confidence.ema_alpha=" << config.confidence.ema_alpha << std::endl;
     std::cout << "confidence.medium_ema_alpha=" << config.confidence.medium_ema_alpha << std::endl;
+    std::cout << "confidence.low_ema_alpha=" << config.confidence.low_ema_alpha << std::endl;
     std::cout << "confidence.high_ratio=" << config.confidence.high_ratio << std::endl;
     std::cout << "confidence.low_ratio=" << config.confidence.low_ratio << std::endl;
+    std::cout << "confidence.hard_low_ratio=" << config.confidence.hard_low_ratio << std::endl;
     std::cout << "confidence.medium_lr_factor=" << config.confidence.medium_lr_factor << std::endl;
-    std::cout << "confidence.low_displacement_threshold=" << config.confidence.low_displacement_threshold << std::endl;
-    std::cout << "confidence.low_displacement_damping=" << config.confidence.low_displacement_damping << std::endl;
+    std::cout << "confidence.soft_low_position_damping=" << config.confidence.soft_low_position_damping << std::endl;
+    std::cout << "confidence.medium_scale_smoothing=" << config.confidence.medium_scale_smoothing << std::endl;
+    std::cout << "confidence.hard_low_displacement_threshold=" << config.confidence.hard_low_displacement_threshold << std::endl;
+    std::cout << "confidence.hard_low_position_damping=" << config.confidence.hard_low_position_damping << std::endl;
 }

@@ -37,8 +37,12 @@ confidence:
   warmup_frames: 12
   ema_alpha: 0.08
   medium_ema_alpha: 0.02
+  low_ema_alpha: 0.005
   high_ratio: 0.90
-  low_ratio: 0.35
-  medium_lr_factor: 0.60
-  low_displacement_threshold: 0.50
-  low_displacement_damping: 0.50
+  low_ratio: 0.4
+  hard_low_ratio: 0.20
+  medium_lr_factor: 0.30
+  soft_low_position_damping: 0.80
+  medium_scale_smoothing: 0.70
+  hard_low_displacement_threshold: 0.50
+  hard_low_position_damping: 0.50

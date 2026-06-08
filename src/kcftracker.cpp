@@ -145,6 +145,14 @@ float rectDiagonal(const cv::Rect2f& box)
     return std::sqrt(box.width * box.width + box.height * box.height);
 }
 
+cv::Rect2f rectFromCenter(const cv::Point2f& center, float width, float height)
+{
+    return cv::Rect2f(center.x - width * 0.5f,
+                      center.y - height * 0.5f,
+                      width,
+                      height);
+}
+
 void clampTrackerRoi(cv::Rect2f& roi, const cv::Mat& image)
 {
     if (roi.x >= image.cols - 1) roi.x = image.cols - 1;
@@ -347,31 +355,55 @@ cv::Rect KCFTracker::update(cv::Mat image)
 
     float trainInterpFactor = interp_factor;
     bool updateTemplate = true;
-    bool updateScale = candidateScale != previousScale;
+    bool updateScale = false;
 
     if (!_confidenceConfig.enabled ||
         diagnostics.confidence_level == ConfidenceLevel::Disabled) {
         _roi = candidateRoi;
         _scale = candidateScale;
+        updateScale = candidateScale != previousScale;
         diagnostics.position_action = PositionAction::Disabled;
     } else if (diagnostics.confidence_level == ConfidenceLevel::Warmup ||
                diagnostics.confidence_level == ConfidenceLevel::High) {
         _roi = candidateRoi;
         _scale = candidateScale;
+        updateScale = candidateScale != previousScale;
         diagnostics.position_action = PositionAction::Accept;
     } else if (diagnostics.confidence_level == ConfidenceLevel::Medium) {
-        _roi = candidateRoi;
-        _scale = candidateScale;
+        const float smoothing = _confidenceConfig.medium_scale_smoothing;
+        const float smoothedScale =
+            previousScale * (1.0f - smoothing) + candidateScale * smoothing;
+        const float scaleRatio =
+            previousScale > 0.0f ? smoothedScale / previousScale : 1.0f;
+
+        _scale = smoothedScale;
+        _roi = rectFromCenter(candidateCenter,
+                              previousRoi.width * scaleRatio,
+                              previousRoi.height * scaleRatio);
+        clampTrackerRoi(_roi, image);
+        updateScale = smoothedScale != previousScale;
         trainInterpFactor = interp_factor * _confidenceConfig.medium_lr_factor;
         diagnostics.position_action = PositionAction::Accept;
+    } else if (diagnostics.confidence_level == ConfidenceLevel::SoftLow) {
+        updateTemplate = false;
+        trainInterpFactor = 0.0f;
+        _scale = previousScale;
+
+        const float damping = _confidenceConfig.soft_low_position_damping;
+        const cv::Point2f dampedCenter(previousCenter.x + dx * damping,
+                                       previousCenter.y + dy * damping);
+        _roi = rectFromCenter(dampedCenter, previousRoi.width, previousRoi.height);
+        clampTrackerRoi(_roi, image);
+        diagnostics.position_action =
+            damping >= 1.0f ? PositionAction::Accept : PositionAction::Damped;
     } else {
         updateTemplate = false;
         trainInterpFactor = 0.0f;
-        updateScale = false;
         _scale = previousScale;
 
-        if (diagnostics.displacement_ratio <= _confidenceConfig.low_displacement_threshold) {
-            const float damping = _confidenceConfig.low_displacement_damping;
+        if (diagnostics.displacement_ratio <=
+            _confidenceConfig.hard_low_displacement_threshold) {
+            const float damping = _confidenceConfig.hard_low_position_damping;
             const cv::Point2f dampedCenter(previousCenter.x + dx * damping,
                                            previousCenter.y + dy * damping);
             _roi = previousRoi;
